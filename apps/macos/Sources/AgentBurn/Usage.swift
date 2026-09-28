@@ -140,16 +140,8 @@ enum CursorModelScope: String, CaseIterable, Identifiable {
   }
 }
 
-enum SpendGranularity: String, CaseIterable, Identifiable {
+enum SpendGranularity: String {
   case daily, weekly, monthly
-  var id: String { rawValue }
-  var label: String {
-    switch self {
-    case .daily: "Daily"
-    case .weekly: "Weekly"
-    case .monthly: "Monthly"
-    }
-  }
   var spendTitle: String {
     switch self {
     case .daily: "Daily spend"
@@ -163,6 +155,9 @@ enum SpendGranularity: String, CaseIterable, Identifiable {
     case .weekly: .weekOfYear
     case .monthly: .month
     }
+  }
+  var axisFormat: Date.FormatStyle {
+    self == .monthly ? .dateTime.month(.abbreviated).year() : .dateTime.month(.abbreviated).day()
   }
 }
 
@@ -214,6 +209,29 @@ func spendBucketEnd(
     return calendar.date(byAdding: .month, value: 1, to: start)?.addingTimeInterval(-1)
       ?? start
   }
+}
+
+/// A `BarMark` with a date `unit` spans its whole bucket, so a domain that ends at the start of
+/// the last bucket draws that bar outside the plot.
+func spendChartDomain(
+  _ range: ClosedRange<Date>, granularity: SpendGranularity, calendar: Calendar = spendCalendar()
+) -> ClosedRange<Date> {
+  let first = spendBucketStart(for: range.lowerBound, granularity: granularity, calendar: calendar)
+  let last = spendBucketStart(for: range.upperBound, granularity: granularity, calendar: calendar)
+  return first...spendBucketEnd(start: last, granularity: granularity, calendar: calendar)
+}
+
+/// Anchored on the newest bar, which users read first. The limit is 4 because the last label is
+/// drawn trailing at the plot end, so the gap before it must hold two labels. Pass `bars` when
+/// bars are sparser than the unit (weekly points on a daily axis), so labels land on them.
+func spendAxisDates(
+  in domain: ClosedRange<Date>, granularity: SpendGranularity, bars: [Date]? = nil,
+  calendar: Calendar = spendCalendar()
+) -> [Date] {
+  let starts =
+    bars ?? quotaChartSteppedDates(in: domain, component: granularity.unit, calendar: calendar)
+  let step = max(1, (starts.count + 3) / 4)
+  return stride(from: starts.count - 1, through: 0, by: -step).reversed().map { starts[$0] }
 }
 
 func bucketDailyUsage(

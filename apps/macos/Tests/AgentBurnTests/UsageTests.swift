@@ -490,3 +490,118 @@ private func hoverDate(month: Int = 9, day: Int, hour: Int) -> Date {
     ])
   #expect(result.writes == 2)
 }
+
+@Test func periodBarReachesEveryPeriodOnce() {
+  #expect(UsagePeriod.segments == [.today, .week, .month, .all])
+  #expect(UsagePeriod.segments.map(\.segmentLabel) == ["Today", "7 days", "30 days", "All time"])
+  #expect(UsagePeriod.more == [.yesterday, .wtd, .mtd, .ytd, .rtd])
+  let reachable = UsagePeriod.segments + UsagePeriod.more
+  #expect(reachable.count == UsagePeriod.allCases.count)
+  #expect(Set(reachable) == Set(UsagePeriod.allCases))
+}
+
+@Test func periodBarMoreLabelNamesOnlyAMorePeriod() {
+  #expect(UsagePeriod.segments.map(\.moreLabel) == ["More", "More", "More", "More"])
+  #expect(UsagePeriod.mtd.moreLabel == "This month")
+  #expect(UsagePeriod.more.map(\.moreLabel) == UsagePeriod.more.map(\.label))
+}
+
+@MainActor private final class PeriodSpy {
+  var value: UsagePeriod
+  init(_ value: UsagePeriod) { self.value = value }
+  var binding: Binding<UsagePeriod> { Binding(get: { self.value }, set: { self.value = $0 }) }
+}
+
+@Test @MainActor func periodBarSelectionIsNilOutsideItsOptions() {
+  let spy = PeriodSpy(.mtd)
+  let segments = periodSelection(spy.binding, in: UsagePeriod.segments)
+  let more = periodSelection(spy.binding, in: UsagePeriod.more)
+  #expect(segments.wrappedValue == nil)
+  #expect(more.wrappedValue == .mtd)
+  segments.wrappedValue = .week
+  #expect(spy.value == .week)
+  #expect(segments.wrappedValue == .week)
+  #expect(more.wrappedValue == nil)
+  segments.wrappedValue = nil
+  #expect(spy.value == .week)
+}
+
+@Test func spendChartDomainCoversTheFirstAndLastBarsWhole() {
+  let calendar = spendTestCalendar()
+  let range = usageDayDate("2026-08-27")!...usageDayDate("2026-09-28")!
+  let expected: [(SpendGranularity, String, String)] = [
+    (.daily, "2026-08-27", "2026-09-29"), (.weekly, "2026-08-24", "2026-10-05"),
+    (.monthly, "2026-08-01", "2026-10-01"),
+  ]
+  for (granularity, first, afterLast) in expected {
+    let domain = spendChartDomain(range, granularity: granularity, calendar: calendar)
+    #expect(domain == usageDayDate(first)!...usageDayDate(afterLast)!.addingTimeInterval(-1))
+  }
+}
+
+@Test func spendAxisDatesStepBackFromTheLastBar() {
+  let calendar = spendTestCalendar()
+  let cases: [(SpendGranularity, String, String, [String])] = [
+    (.daily, "2026-09-22", "2026-09-28", ["2026-09-22", "2026-09-24", "2026-09-26", "2026-09-28"]),
+    (.daily, "2026-09-01", "2026-09-28", ["2026-09-07", "2026-09-14", "2026-09-21", "2026-09-28"]),
+    (
+      .weekly, "2026-05-02", "2026-09-28", ["2026-05-25", "2026-07-06", "2026-08-17", "2026-09-28"]
+    ),
+    (
+      .monthly, "2025-09-15", "2026-09-28",
+      ["2025-09-01", "2026-01-01", "2026-05-01", "2026-09-01"]
+    ),
+  ]
+  for (granularity, lower, upper, expected) in cases {
+    let range = usageDayDate(lower)!...usageDayDate(upper)!
+    let domain = spendChartDomain(range, granularity: granularity, calendar: calendar)
+    let dates = spendAxisDates(in: domain, granularity: granularity, calendar: calendar)
+    let lastBar = spendBucketStart(
+      for: range.upperBound, granularity: granularity, calendar: calendar)
+    let gaps = zip(dates, dates.dropFirst()).map {
+      calendar.dateComponents([granularity.unit], from: $0, to: $1).value(for: granularity.unit)
+    }
+    #expect(dates.map(quotaDayKey) == expected)
+    #expect(dates.last == lastBar)
+    #expect(Set(gaps).count == 1)
+    #expect((3...4).contains(dates.count))
+    #expect(!dates.contains(domain.upperBound))
+    for date in dates {
+      #expect(domain.contains(date))
+      #expect(spendBucketStart(for: date, granularity: granularity, calendar: calendar) == date)
+    }
+  }
+}
+
+@Test func spendAxisPlacementPinsTheLastLabelToThePlotEnd() {
+  let calendar = spendTestCalendar()
+  func placements(_ lower: String, _ upper: String) -> [(position: Date, anchor: UnitPoint?)] {
+    let range = usageDayDate(lower)!...usageDayDate(upper)!
+    let domain = spendChartDomain(range, granularity: .daily, calendar: calendar)
+    let dates = spendAxisDates(in: domain, granularity: .daily, calendar: calendar)
+    return dates.map { spendAxisPlacement($0, in: dates, domain: domain) }
+  }
+  let dayAfterEnd = usageDayDate("2026-09-29")!.addingTimeInterval(-1)
+  let week = placements("2026-09-22", "2026-09-28")
+  #expect(
+    week.map { quotaDayKey($0.position) }
+      == ["2026-09-22", "2026-09-24", "2026-09-26", quotaDayKey(dayAfterEnd)])
+  #expect(week.last?.position == dayAfterEnd)
+  #expect(week.map { $0.anchor } == [nil, nil, nil, .topTrailing])
+  let today = placements("2026-09-28", "2026-09-28")
+  #expect(today.count == 1)
+  #expect(today.first?.position == dayAfterEnd)
+  #expect(today.first?.anchor == .topTrailing)
+}
+
+@Test func spendAxisDatesLabelWeeklyPointsOnADailyAxis() {
+  let calendar = spendTestCalendar()
+  let mondays = (0..<8).map {
+    calendar.date(byAdding: .day, value: 7 * $0, to: usageDayDate("2026-08-03")!)!
+  }
+  let domain = spendChartDomain(
+    mondays.first!...mondays.last!, granularity: .daily, calendar: calendar)
+  let dates = spendAxisDates(in: domain, granularity: .daily, bars: mondays, calendar: calendar)
+  #expect(dates.map(quotaDayKey) == ["2026-08-10", "2026-08-24", "2026-09-07", "2026-09-21"])
+  #expect(dates.allSatisfy(mondays.contains))
+}
