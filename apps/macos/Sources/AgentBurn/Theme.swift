@@ -25,6 +25,10 @@ enum BurnTheme {
   static let ahead = Color.green
   static let behind = Color.red
 
+  static func remainingTone(_ remaining: Double) -> Color {
+    remaining < 15 ? behind : remaining < 35 ? .orange : .green
+  }
+
   // Compact quota text and chart strokes must stay legible on menu material in both appearances.
   static let quotaMuted = adaptiveQuotaColor(
     light: NSColor(white: 0.38, alpha: 1), dark: NSColor(white: 0.68, alpha: 1))

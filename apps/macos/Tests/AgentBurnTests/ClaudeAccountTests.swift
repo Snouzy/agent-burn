@@ -29,3 +29,11 @@ import Testing
   let account = ClaudeAccount(extraUsedUSD: 25, extraLimitUSD: 1000)
   #expect(extraUsedPercent(account) == 2.5)
 }
+
+@Test func remainingToneWarnsOnlyWhenLittleIsLeft() {
+  #expect(BurnTheme.remainingTone(100) == .green)
+  #expect(BurnTheme.remainingTone(35) == .green)
+  #expect(BurnTheme.remainingTone(34.9) == .orange)
+  #expect(BurnTheme.remainingTone(15) == .orange)
+  #expect(BurnTheme.remainingTone(14.9) == BurnTheme.behind)
+}
