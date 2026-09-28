@@ -21,6 +21,13 @@ import SwiftUI
     }
   }
 
+  var notchDisplay: String? {
+    didSet {
+      defaults.set(notchDisplay, forKey: "notchDisplay")
+      onNotchChange?(showsNotch)
+    }
+  }
+
   var onNotchChange: ((Bool) -> Void)?
 
   init(
@@ -33,6 +40,7 @@ import SwiftUI
     self.applyPolicy = applyPolicy
     menuBarOnly = defaults.bool(forKey: "menuBarOnly")
     showsNotch = defaults.bool(forKey: "showsNotch")
+    notchDisplay = defaults.string(forKey: "notchDisplay")
   }
 
   func apply() { applyPolicy(menuBarOnly ? .accessory : .regular) }
@@ -67,6 +75,7 @@ import SwiftUI
 
 struct AppearanceSettings: View {
   @Bindable private var appearance = AppAppearance.shared
+  @State private var screens = NSScreen.screens
   var body: some View {
     Section("Appearance") {
       Toggle("Menu bar only", isOn: $appearance.menuBarOnly)
@@ -79,6 +88,24 @@ struct AppearanceSettings: View {
         "Pins your limits to the right edge of the screen. Hover a ring to see the reset, the forecast and what your use would cost at API prices."
       )
       .font(.caption).foregroundStyle(.secondary)
+      Picker("Display", selection: $appearance.notchDisplay) {
+        Text("Automatic").tag(String?.none)
+        ForEach(screens.filter { $0.displayIdentifier != nil }, id: \.self) { screen in
+          Text(screen.localizedName).tag(screen.displayIdentifier)
+        }
+        if let chosen = appearance.notchDisplay,
+          !screens.contains(where: { $0.displayIdentifier == chosen })
+        {
+          Text("Disconnected display").tag(String?.some(chosen))
+        }
+      }
+      .disabled(!appearance.showsNotch)
+      .onReceive(
+        NotificationCenter.default.publisher(
+          for: NSApplication.didChangeScreenParametersNotification)
+      ) { _ in screens = NSScreen.screens }
+      Text("Automatic uses the screen furthest right.")
+        .font(.caption).foregroundStyle(.secondary)
     }
   }
 }

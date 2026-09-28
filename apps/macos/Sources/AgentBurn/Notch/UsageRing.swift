@@ -10,19 +10,21 @@ struct NotchRing: Equatable, Identifiable, Sendable {
   var voiceOverLabel: String {
     "\(harnessName(agent)), \(style.title), \(Int(usedPercent.rounded())) percent used"
   }
+  func opacity(highlighted: Bool) -> Double { stale && !highlighted ? 0.45 : 1 }
 }
 
 struct UsageRing: View {
   let ring: NotchRing
+  let highlighted: Bool
   var body: some View {
+    let color = BurnTheme.color(for: ring.agent)
     VStack(spacing: NotchModel.labelGap) {
       ZStack {
-        Circle().stroke(Color.white.opacity(0.18), lineWidth: 5.8)
+        Circle().stroke(color.opacity(highlighted ? 0.35 : 0), lineWidth: 12)
+        Circle().stroke(Color.white.opacity(highlighted ? 0.26 : 0.18), lineWidth: 5.8)
         Circle()
           .trim(from: 0, to: min(max(ring.usedPercent / 100, 0), 1))
-          .stroke(
-            BurnTheme.color(for: ring.agent), style: StrokeStyle(lineWidth: 3, lineCap: .round)
-          )
+          .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
           .rotationEffect(.degrees(-90))
         if let image = BrandImages.images[ring.agent] {
           Image(nsImage: image).resizable().interpolation(.high).frame(width: 17, height: 17)
@@ -35,7 +37,13 @@ struct UsageRing: View {
         .foregroundStyle(.white)
         .frame(height: NotchModel.percentLine)
     }
-    .opacity(ring.stale ? 0.45 : 1)
+    // A .background never resizes its view, so the -7 padding only grows the highlight.
+    .background(
+      RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(highlighted ? 0.08 : 0))
+        .padding(-7)
+    )
+    .opacity(ring.opacity(highlighted: highlighted))
+    .animation(.easeOut(duration: 0.15), value: highlighted)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(ring.voiceOverLabel)
   }

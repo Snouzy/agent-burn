@@ -1,14 +1,19 @@
 import SwiftUI
 
 struct NotchCardData {
+  struct ModelCost: Equatable {
+    let name: String
+    let cost: String
+  }
+
   let agent: String
   let title: String
   let plan: String?
   let forecast: Forecast
   let samples: [QuotaSample]
-  let stale: Bool
+  let staleText: String?
   let spend: NotchModel.Spend?
-  let models: [(name: String, cost: String)]
+  let models: [ModelCost]
   let style: QuotaMeterStyle
   let range: QuotaChartRange
 
@@ -75,9 +80,9 @@ struct NotchCardRows: View {
     .frame(height: NotchModel.headerHeight)
   }
 
-  private var limit: some View {
+  var limit: some View {
     let used = data.forecast.window.usedPercent
-    return VStack(alignment: .leading, spacing: 4) {
+    return VStack(alignment: .leading, spacing: 6) {
       HStack {
         Text(data.style.title).font(.system(size: 12))
         Spacer()
@@ -92,18 +97,13 @@ struct NotchCardRows: View {
         }
       }
       .frame(height: 4)
-      Text(
-        data.stale
-          ? "Saved reading · " + data.forecast.observedAt.formatted(.relative(presentation: .named))
-          : "\(Int(used.rounded()))% used"
-      )
-      .font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.6))
+      Text(data.staleText ?? "\(Int(used.rounded()))% used")
+        .font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.6))
     }
-    .frame(height: NotchModel.limitHeight)
   }
 
   private func spendRow(_ spend: NotchModel.Spend) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
+    VStack(alignment: .leading, spacing: 4) {
       Text("30 days · API-equivalent").font(.system(size: 11))
         .foregroundStyle(Color.white.opacity(0.6))
       Text([spend.spend, spend.plan, spend.multiple].compactMap { $0 }.joined(separator: " · "))
@@ -112,7 +112,7 @@ struct NotchCardRows: View {
     .frame(height: NotchModel.spendHeight, alignment: .top)
   }
 
-  private func modelRow(_ model: (name: String, cost: String)) -> some View {
+  private func modelRow(_ model: NotchCardData.ModelCost) -> some View {
     HStack {
       Text(model.name).font(.system(size: 11)).lineLimit(1)
       Spacer()

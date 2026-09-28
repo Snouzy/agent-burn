@@ -12,6 +12,10 @@ extension NotchModel {
     }
   }
 
+  @MainActor static func cards(store: UsageStore, now: Date = .now) -> [NotchCardData] {
+    rings(store: store, now: now).compactMap { card(store: store, agent: $0.agent, now: now) }
+  }
+
   @MainActor static func card(store: UsageStore, agent: String, now: Date = .now) -> NotchCardData?
   {
     guard let forecast = store.forecast(for: agent) else { return nil }
@@ -28,18 +32,29 @@ extension NotchModel {
       .sorted { $0.cost > $1.cost }
       .prefix(maxModels)
       .map {
-        (
+        NotchCardData.ModelCost(
           name: $0.model,
-          cost: $0.cost.formatted(.currency(code: "USD").precision(.fractionLength(0)))
-        )
+          cost: $0.cost.formatted(.currency(code: "USD").precision(.fractionLength(0))))
       }
     let range = store.chartRange(for: agent)
+    let stale = !forecast.isFresh(at: now) || store.quotaError(for: agent) != nil
     return NotchCardData(
       agent: agent, title: harnessName(agent), plan: plan, forecast: forecast,
       samples: store.samples(for: agent, range: range),
-      stale: !forecast.isFresh(at: now)
-        || store.quotaError(for: agent) != nil,
+      staleText: stale ? savedReading(forecast.observedAt, now: now) : nil,
       spend: spend, models: models, style: style(for: agent), range: range)
+  }
+
+  @MainActor static func cardHeight(store: UsageStore, agent: String) -> CGFloat? {
+    guard store.forecast(for: agent) != nil else { return nil }
+    let report = store.reports[agent]
+    return cardHeight(hasSpend: report != nil, modelCount: report?.topModels.count ?? 0)
+  }
+
+  private static func savedReading(_ observedAt: Date, now: Date) -> String {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.dateTimeStyle = .named
+    return "Saved reading · " + formatter.localizedString(for: observedAt, relativeTo: now)
   }
 
   // Cursor has a forecast only while promotional credits burn: see cursorQuotaReading.

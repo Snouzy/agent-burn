@@ -19,7 +19,7 @@ import SwiftUI
   func attach(_ store: UsageStore) { self.store = store }
 
   func apply(_ on: Bool) {
-    if on { show() } else { hide() }
+    if !on { hide() } else if panel == nil { show() } else { place() }
   }
 
   func open(_ agent: String) {
@@ -117,7 +117,11 @@ import SwiftUI
   }
 
   private func place() {
-    guard let panel, let screen = NSScreen.screens.first else { return }
+    guard let panel,
+      let screen = NotchModel.screen(
+        from: NSScreen.screens, preference: AppAppearance.shared.notchDisplay,
+        id: \.displayIdentifier, frame: \.frame)
+    else { return }
     panel.setFrame(
       NotchModel.panelFrame(screen: screen.frame, ringCount: ringCount), display: false)
     updatePassThrough()
@@ -147,16 +151,10 @@ struct NotchRoot: View {
   var body: some View {
     let now = store.quotaCheckDate
     let rings = NotchModel.rings(store: store, now: now)
-    let card = controller.openAgent.flatMap { NotchModel.card(store: store, agent: $0, now: now) }
     ZStack(alignment: .trailing) {
       if !rings.isEmpty {
         HStack(spacing: NotchModel.cardGap) {
-          if let card {
-            NotchCard(data: card)
-              .onHover { $0 ? controller.cancelClose() : controller.scheduleClose() }
-          } else {
-            Color.clear.frame(width: NotchModel.cardWidth)
-          }
+          NotchCardStack(controller: controller, store: store, now: now)
           notch(rings)
         }
       }
@@ -164,9 +162,7 @@ struct NotchRoot: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
     .onChange(of: rings.map(\.agent), initial: true) { controller.ringsChanged($1) }
     .onChange(
-      of: card.map {
-        NotchModel.cardHeight(hasSpend: $0.spend != nil, modelCount: $0.models.count)
-      },
+      of: controller.openAgent.flatMap { NotchModel.cardHeight(store: store, agent: $0) },
       initial: true
     ) { controller.cardHeightChanged($1) }
   }
@@ -174,7 +170,7 @@ struct NotchRoot: View {
   private func notch(_ rings: [NotchRing]) -> some View {
     VStack(spacing: NotchModel.cellSpacing) {
       ForEach(rings) { ring in
-        UsageRing(ring: ring)
+        UsageRing(ring: ring, highlighted: controller.openAgent == ring.agent)
           .frame(width: NotchModel.notchDepth)
           .contentShape(Rectangle())
           .onHover { $0 ? controller.open(ring.agent) : controller.scheduleClose() }
@@ -184,5 +180,39 @@ struct NotchRoot: View {
     .padding(.bottom, NotchModel.curl + NotchModel.padBottom)
     .frame(width: NotchModel.notchDepth, height: NotchModel.notchHeight(ringCount: rings.count))
     .background(NotchShape().fill(.black))
+  }
+}
+
+// Every card stays built, so a hover only fades one in: building the chart costs about a frame.
+// This view must not read `openAgent`, or each hover would rebuild all the charts.
+private struct NotchCardStack: View {
+  let controller: NotchController
+  let store: UsageStore
+  let now: Date
+
+  var body: some View {
+    ZStack {
+      ForEach(NotchModel.cards(store: store, now: now), id: \.agent) { card in
+        NotchCard(data: card).modifier(CardVisibility(agent: card.agent, controller: controller))
+      }
+    }
+    .frame(width: NotchModel.cardWidth)
+  }
+}
+
+private struct CardVisibility: ViewModifier {
+  let agent: String
+  let controller: NotchController
+
+  func body(content: Content) -> some View {
+    let visible = controller.openAgent == agent
+    // .onHover stays inside .allowsHitTesting, or a hidden card above takes the open card's hover.
+    content
+      .onHover { $0 ? controller.cancelClose() : controller.scheduleClose() }
+      .opacity(visible ? 1 : 0)
+      .allowsHitTesting(visible)
+      .accessibilityHidden(!visible)
+      .zIndex(visible ? 1 : 0)
+      .animation(.easeOut(duration: 0.12), value: visible)
   }
 }

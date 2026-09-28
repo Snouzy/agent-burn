@@ -11,7 +11,7 @@ enum NotchModel {
   static let cellSpacing: CGFloat = 31.4
   static let labelGap: CGFloat = 10.1
   static let percentLine: CGFloat = 18
-  static let cardWidth: CGFloat = 300
+  static let cardWidth: CGFloat = 320
   static let cardGap: CGFloat = 12
   static let maxModels = 3
 
@@ -49,17 +49,17 @@ enum NotchModel {
       multiple: times)
   }
 
-  static let cardPadding: CGFloat = 14
+  static let cardPadding: CGFloat = 18
   static let headerHeight: CGFloat = 30
-  static let limitHeight: CGFloat = 40
+  static let limitHeight: CGFloat = 45
   static let chartPlotHeight: CGFloat = 96
   // Compact QuotaChart draws its 12 pt cursor label and a gap above the plot, outside `height:`.
   static let chartLabelHeight: CGFloat = 15
   static let chartLabelGap: CGFloat = 8
   static let chartHeight = chartLabelHeight + chartLabelGap + chartPlotHeight
-  static let spendHeight: CGFloat = 36
-  static let modelRowHeight: CGFloat = 18
-  static let rowGap: CGFloat = 10
+  static let spendHeight: CGFloat = 38
+  static let modelRowHeight: CGFloat = 22
+  static let rowGap: CGFloat = 16
 
   static func cardHeight(hasSpend: Bool, modelCount: Int) -> CGFloat {
     let base = 2 * cardPadding + headerHeight + rowGap + limitHeight + rowGap + chartHeight
@@ -81,6 +81,17 @@ enum NotchModel {
     let height = max(notchHeight(ringCount: ringCount), largestCardHeight)
     return CGRect(
       x: screen.maxX - width, y: screen.midY - height / 2, width: width, height: height)
+  }
+
+  static func screen<S>(
+    from screens: [S], preference: String?, id: (S) -> String?, frame: (S) -> CGRect
+  ) -> S? {
+    if let preference, let chosen = screens.first(where: { id($0) == preference }) {
+      return chosen
+    }
+    return screens.reduce(nil) { best, next in
+      best.map { frame(next).maxX > frame($0).maxX ? next : $0 } ?? next
+    }
   }
 
   static func cardRect(panel: CGRect, height: CGFloat) -> CGRect {

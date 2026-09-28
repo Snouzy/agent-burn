@@ -60,6 +60,26 @@ private func harnessReport(
   #expect(NotchModel.notchHeight(ringCount: 3) > NotchModel.notchHeight(ringCount: 1))
 }
 
+private let staleRing = NotchRing(agent: "claude", usedPercent: 10, stale: true, style: .weekly)
+
+@Test func notchStaleRingLightsUpWhileItsCardIsOpen() {
+  let fresh = NotchRing(agent: "codex", usedPercent: 36, stale: false, style: .weekly)
+  #expect(staleRing.opacity(highlighted: false) == 0.45)
+  #expect(staleRing.opacity(highlighted: true) == 1)
+  #expect(fresh.opacity(highlighted: false) == 1)
+  #expect(fresh.opacity(highlighted: true) == 1)
+}
+
+@Test @MainActor func notchRingKeepsItsSizeWhenHighlighted() throws {
+  func size(highlighted: Bool) throws -> CGSize {
+    let ring = UsageRing(ring: staleRing, highlighted: highlighted)
+    return try #require(ImageRenderer(content: ring).nsImage?.size)
+  }
+  #expect(try size(highlighted: true) == size(highlighted: false))
+  let cell = NotchModel.ringDiameter + NotchModel.labelGap + NotchModel.percentLine
+  #expect(try size(highlighted: true).height == cell)
+}
+
 @Test @MainActor func notchSwitchDefaultsOffAndPersists() throws {
   let suite = "AgentBurn.notch.\(UUID().uuidString)"
   let defaults = try #require(UserDefaults(suiteName: suite))
@@ -86,10 +106,13 @@ private func codexCardData(hasSpend: Bool = true) -> NotchCardData {
     windowMinutes: 10080, usedPercent: 36, elapsedPercent: 30, apiEquivalentSpent: 0)
   let forecast = Forecast(window: window, observedAt: .now, isLive: true)
   return NotchCardData(
-    agent: "codex", title: "Codex", plan: "Pro", forecast: forecast, samples: [], stale: false,
+    agent: "codex", title: "Codex", plan: "Pro", forecast: forecast, samples: [], staleText: nil,
     spend: hasSpend ? NotchModel.spend(apiEquivalent: 5927, price: 200, multiple: 29.6) : nil,
     models: hasSpend
-      ? [("gpt-5.6-sol", "$3,120"), ("gpt-5.5", "$1,980"), ("gpt-5.4-mini", "$212")] : [],
+      ? [
+        .init(name: "gpt-5.6-sol", cost: "$3,120"), .init(name: "gpt-5.5", cost: "$1,980"),
+        .init(name: "gpt-5.4-mini", cost: "$212"),
+      ] : [],
     style: .weekly, range: .rte)
 }
 
@@ -110,6 +133,8 @@ private func codexCardData(hasSpend: Bool = true) -> NotchCardData {
     let rows = NotchCardRows(data: data)
     let chart = try renderedHeight(rows.chart)
     #expect(abs(chart - NotchModel.chartHeight) < 1, "chart \(chart)")
+    let limit = try renderedHeight(rows.limit)
+    #expect(abs(limit - NotchModel.limitHeight) < 1, "limit \(limit)")
     let content = try renderedHeight(rows)
     let budget =
       NotchModel.cardHeight(hasSpend: data.spend != nil, modelCount: data.models.count)
@@ -234,15 +259,15 @@ private func codexCardData(hasSpend: Bool = true) -> NotchCardData {
   store.reloadQuotas()
 
   let fresh = try #require(NotchModel.card(store: store, agent: "claude", now: now))
-  #expect(!fresh.stale)
+  #expect(fresh.staleText == nil)
 
   store.errors["quotaCollector"] = "boom"
   let withError = try #require(NotchModel.card(store: store, agent: "claude", now: now))
-  #expect(withError.stale)
+  #expect(withError.staleText != nil)
   store.errors["quotaCollector"] = nil
 
   let aged = try #require(NotchModel.card(store: store, agent: "codex", now: now))
-  #expect(aged.stale)
+  #expect(aged.staleText != nil)
 }
 
 @Test @MainActor func notchCursorCardNamesPromotionalCreditsLikeTheDashboard() throws {
@@ -338,4 +363,204 @@ private let notchScreen = CGRect(x: 1512, y: 120, width: 1512, height: 982)
       panel: panel, ringCount: 0, cardHeight: NotchModel.largestCardHeight
     )
     .isEmpty)
+}
+
+@Test @MainActor func notchDisplayDefaultsToAutomaticAndPersists() throws {
+  let suite = "AgentBurn.notch.display.\(UUID().uuidString)"
+  let defaults = try #require(UserDefaults(suiteName: suite))
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let appearance = AppAppearance(defaults: defaults, applyPolicy: { _ in })
+  #expect(appearance.notchDisplay == nil)
+  appearance.notchDisplay = "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+  #expect(
+    AppAppearance(defaults: defaults, applyPolicy: { _ in }).notchDisplay
+      == "37D8832A-2D66-02CA-B9F7-8F30A301B230")
+  appearance.notchDisplay = nil
+  #expect(AppAppearance(defaults: defaults, applyPolicy: { _ in }).notchDisplay == nil)
+}
+
+private struct FakeScreen {
+  let id: String?
+  let frame: CGRect
+}
+
+private let menuBarScreen = FakeScreen(
+  id: "BUILTIN", frame: CGRect(x: 0, y: 0, width: 1728, height: 1117))
+private let externalScreen = FakeScreen(
+  id: "EXTERNAL", frame: CGRect(x: 1728, y: 0, width: 1920, height: 1080))
+private let leftScreen = FakeScreen(
+  id: "LEFT", frame: CGRect(x: -1920, y: 0, width: 1920, height: 1080))
+
+private func notchScreenID(_ screens: [FakeScreen], preference: String?) -> String? {
+  NotchModel.screen(from: screens, preference: preference, id: \.id, frame: \.frame)?.id
+}
+
+@Test func notchHasNoScreenWithoutScreens() {
+  #expect(notchScreenID([], preference: nil) == nil)
+  #expect(notchScreenID([], preference: "EXTERNAL") == nil)
+}
+
+@Test func notchGoesToTheChosenDisplayWhenItIsConnected() {
+  let screens = [menuBarScreen, externalScreen, leftScreen]
+  #expect(notchScreenID(screens, preference: "BUILTIN") == "BUILTIN")
+  #expect(notchScreenID(screens, preference: "LEFT") == "LEFT")
+}
+
+@Test func notchAutomaticPicksTheRightmostScreenNotTheMenuBarOne() {
+  #expect(notchScreenID([menuBarScreen, externalScreen], preference: nil) == "EXTERNAL")
+  #expect(notchScreenID([menuBarScreen, leftScreen], preference: nil) == "BUILTIN")
+  let above = FakeScreen(id: "ABOVE", frame: CGRect(x: 0, y: 1117, width: 1728, height: 1117))
+  #expect(notchScreenID([menuBarScreen, above], preference: nil) == "BUILTIN")
+  let unnamed = FakeScreen(id: nil, frame: menuBarScreen.frame)
+  #expect(notchScreenID([unnamed, externalScreen], preference: nil) == "EXTERNAL")
+}
+
+@Test func notchFallsBackToTheRightmostScreenWhenTheChosenOneIsGone() {
+  let screens = [menuBarScreen, externalScreen, leftScreen]
+  #expect(notchScreenID(screens, preference: "UNPLUGGED") == "EXTERNAL")
+}
+
+@Test @MainActor func notchPreparesOneCardPerRingInRingOrder() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  store.summary = SummaryReport(
+    totals: Totals(totalCost: 0, totalTokens: 0),
+    agents: [agentUsage("claude"), agentUsage("codex"), agentUsage("opencode")],
+    models: [], daily: nil, subscription: nil)
+  store.reports["claude"] = harnessReport(agent: "claude", usedPercent: 70)
+  store.updated["claude"] = .now
+  store.reports["codex"] = harnessReport(agent: "codex", usedPercent: 40)
+  store.updated["codex"] = .now
+
+  let cards = NotchModel.cards(store: store)
+  #expect(cards.map(\.agent) == NotchModel.rings(store: store).map(\.agent))
+  #expect(cards.map(\.agent) == ["codex", "claude"])
+}
+
+private final class CardBodies {
+  private(set) var byAgent: [String: Int] = [:]
+  func record(_ agent: String) { byAgent[agent, default: 0] += 1 }
+}
+
+private struct CountedNotchCard: View {
+  let data: NotchCardData
+  let bodies: CardBodies
+
+  var body: some View {
+    let _ = bodies.record(data.agent)
+    NotchCard(data: data)
+  }
+}
+
+private struct NotchCardsHost: View {
+  let cards: [NotchCardData]
+  let bodies: CardBodies
+
+  var body: some View {
+    ForEach(cards, id: \.agent) { CountedNotchCard(data: $0, bodies: bodies) }
+  }
+}
+
+// quotaCheckDate ticks about every 5 s, even with the notch closed: only new data may rebuild a chart.
+@Test @MainActor func notchTickWithUnchangedDataSkipsTheCards() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  store.summary = SummaryReport(
+    totals: Totals(totalCost: 0, totalTokens: 0),
+    agents: [agentUsage("codex"), agentUsage("claude")], models: [], daily: nil,
+    subscription: nil)
+  func report(_ agent: String, topCost: Double) -> HarnessReport {
+    harnessReport(
+      agent: agent, usedPercent: 40, apiEquivalentPerMonth: 500, pricePerMonth: 20,
+      topModels: [
+        HarnessModel(model: "top", cost: topCost, tokens: 0),
+        HarnessModel(model: "second", cost: 20, tokens: 0),
+      ])
+  }
+  let observedAt = Date.now.addingTimeInterval(-3 * 3600)
+  for agent in ["codex", "claude"] {
+    store.reports[agent] = report(agent, topCost: 300)
+    store.updated[agent] = observedAt
+  }
+
+  let bodies = CardBodies()
+  let host = NSHostingView(rootView: NotchCardsHost(cards: [], bodies: bodies))
+  host.frame = CGRect(
+    x: 0, y: 0, width: NotchModel.cardWidth, height: NotchModel.largestCardHeight)
+  var now = Date.now
+  func tick(_ seconds: TimeInterval = 5) {
+    now.addTimeInterval(seconds)
+    host.rootView = NotchCardsHost(cards: NotchModel.cards(store: store, now: now), bodies: bodies)
+    host.layoutSubtreeIfNeeded()
+  }
+
+  let ticks = 12
+  for _ in 0..<ticks { tick() }
+  #expect(bodies.byAgent == ["codex": 1, "claude": 1], "card bodies over \(ticks) ticks")
+
+  store.reports["codex"] = report("codex", topCost: 310)
+  tick()
+  #expect(bodies.byAgent == ["codex": 2, "claude": 1], "after a new codex model cost")
+
+  tick(2 * 3600)
+  #expect(bodies.byAgent == ["codex": 3, "claude": 2], "after the stale text ages")
+}
+
+@Test @MainActor func notchStaleTextFollowsTheStoreClock() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  let observedAt = Date.now.addingTimeInterval(-2 * 86_400)
+  store.reports["codex"] = harnessReport(agent: "codex", usedPercent: 40)
+  store.updated["codex"] = observedAt
+
+  func staleText(after seconds: TimeInterval) throws -> String? {
+    try #require(
+      NotchModel.card(store: store, agent: "codex", now: observedAt.addingTimeInterval(seconds))
+    ).staleText
+  }
+  let minutes = try #require(try staleText(after: 3 * 60))
+  let hours = try #require(try staleText(after: 3 * 3600))
+  #expect(minutes.hasPrefix("Saved reading · "))
+  #expect(minutes != hours)
+  #expect(try staleText(after: 3 * 60) == minutes)
+}
+
+@Test @MainActor func notchCardHeightFromTheStoreMatchesTheFullCard() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  var history = QuotaHistory()
+  history.record(
+    QuotaReading(
+      agent: "claude", observedAt: Date.now.timeIntervalSince1970 * 1000,
+      window: QuotaWindow(
+        windowMinutes: 10080, usedPercent: 55, elapsedPercent: 20, apiEquivalentSpent: 0)),
+    source: store.customPath + "|" + store.codexHomes)
+  try QuotaHistoryFile(directory: directory).save(history)
+  store.reloadQuotas()
+  store.reports["codex"] = harnessReport(
+    agent: "codex", usedPercent: 40, apiEquivalentPerMonth: 500,
+    topModels: (1...5).map { HarnessModel(model: "m\($0)", cost: Double($0), tokens: 0) })
+  store.updated["codex"] = .now
+  store.reports["gemini"] = harnessReport(agent: "gemini", usedPercent: 10)
+  store.updated["gemini"] = .now
+
+  for agent in ["codex", "gemini", "claude", "opencode"] {
+    let full = NotchModel.card(store: store, agent: agent).map {
+      NotchModel.cardHeight(hasSpend: $0.spend != nil, modelCount: $0.models.count)
+    }
+    #expect(NotchModel.cardHeight(store: store, agent: agent) == full, "\(agent)")
+    #expect((full == nil) == (agent == "opencode"), "\(agent)")
+  }
 }
