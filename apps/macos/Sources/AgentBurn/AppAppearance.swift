@@ -14,6 +14,15 @@ import SwiftUI
     }
   }
 
+  var showsNotch: Bool {
+    didSet {
+      defaults.set(showsNotch, forKey: "showsNotch")
+      onNotchChange?(showsNotch)
+    }
+  }
+
+  var onNotchChange: ((Bool) -> Void)?
+
   init(
     defaults: UserDefaults = .standard,
     applyPolicy: @escaping (NSApplication.ActivationPolicy) -> Void = {
@@ -23,6 +32,7 @@ import SwiftUI
     self.defaults = defaults
     self.applyPolicy = applyPolicy
     menuBarOnly = defaults.bool(forKey: "menuBarOnly")
+    showsNotch = defaults.bool(forKey: "showsNotch")
   }
 
   func apply() { applyPolicy(menuBarOnly ? .accessory : .regular) }
@@ -33,6 +43,8 @@ import SwiftUI
     NSApp.applicationIconImage = AppLogo.window
     applyWindowLogo()
     AppAppearance.shared.apply()
+    NotchController.shared.apply(AppAppearance.shared.showsNotch)
+    AppAppearance.shared.onNotchChange = { NotchController.shared.apply($0) }
     if AppAppearance.shared.menuBarOnly {
       // SwiftUI has finished creating its initial dashboard at this point.
       for window in NSApplication.shared.windows where window.title == "Agent Burn" {
@@ -60,6 +72,11 @@ struct AppearanceSettings: View {
       Toggle("Menu bar only", isOn: $appearance.menuBarOnly)
       Text(
         "Hide Agent Burn from the Dock and Command-Tab. Open the dashboard and Settings from the menu bar. This choice is remembered when the app restarts."
+      )
+      .font(.caption).foregroundStyle(.secondary)
+      Toggle("Show notch", isOn: $appearance.showsNotch)
+      Text(
+        "Pins your limits to the right edge of the screen. Hover a ring to see the reset, the forecast and what your use would cost at API prices."
       )
       .font(.caption).foregroundStyle(.secondary)
     }

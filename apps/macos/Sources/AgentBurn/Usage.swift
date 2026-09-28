@@ -290,6 +290,12 @@ enum QuotaMeterStyle {
     case .promotionalCredits: "Expires in"
     }
   }
+  var resetDateTitle: String {
+    switch self {
+    case .weekly: "Resets"
+    case .promotionalCredits: "Expires"
+    }
+  }
   var resetHelp: String {
     switch self {
     case .weekly: "Time left in this weekly limit window."

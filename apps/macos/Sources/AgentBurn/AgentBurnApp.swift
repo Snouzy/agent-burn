@@ -22,6 +22,7 @@ struct AgentBurnApp: App {
   init() {
     let store = UsageStore()
     _store = State(initialValue: store)
+    NotchController.shared.attach(store)
     Task { await store.start() }
   }
   var body: some Scene {
