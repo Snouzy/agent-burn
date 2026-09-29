@@ -5,18 +5,15 @@ struct OverviewView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .center) {
-        Text("Overview").font(.system(size: 15, weight: .semibold))
-        Spacer()
-        PeriodPicker(width: 130).controlSize(.small)
-      }
-      .padding(.horizontal, 4)
+      Text("Overview").font(.system(size: 15, weight: .semibold))
+        .padding(.horizontal, 4)
       if let error = store.errors["summary"] { ReportNotice(message: error) }
+      PeriodBar().controlSize(.small)
       if let report = store.summary {
         HStack(spacing: 10) {
           MetricTile(
             title: "Spend", value: currency(report.totals.totalCost),
-            detail: "API-equivalent · \(store.period.label)", symbol: "dollarsign",
+            detail: "\(store.period.label) · API-equivalent", symbol: "dollarsign",
             compact: true
           )
           .burnCard(padding: 12, radius: 12)

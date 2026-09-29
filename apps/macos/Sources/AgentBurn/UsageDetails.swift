@@ -220,6 +220,15 @@ func snappedSelection(
     })
 }
 
+/// Axis labels start at their mark and run right. The last one would run past the plot, so it
+/// moves to the plot end and ends there.
+func spendAxisPlacement(_ date: Date, in dates: [Date], domain: ClosedRange<Date>)
+  -> (position: Date, anchor: UnitPoint?)
+{
+  if date == dates.last { return (domain.upperBound, .topTrailing) }
+  return (date, nil)
+}
+
 struct DailySpendChart: View {
   let title: String
   let days: [DailyUsage]
@@ -228,7 +237,6 @@ struct DailySpendChart: View {
   var domain: ClosedRange<Date>? = nil
   var showsGranularity = true
   @State private var selected: Date?
-  @State private var granularityOverride: SpendGranularity?
   private var points: [(date: Date, usage: DailyUsage)] {
     days.compactMap { usage in
       guard let date = usageDayDate(usage.date) else { return nil }
@@ -246,10 +254,7 @@ struct DailySpendChart: View {
   private var spanDays: Int { spendSpanDays(lower: scale.lowerBound, upper: scale.upperBound) }
   private var effective: SpendGranularity {
     guard showsGranularity else { return .daily }
-    return granularityOverride ?? spendGranularityAuto(spanDays: spanDays)
-  }
-  private var granularityBinding: Binding<SpendGranularity> {
-    Binding(get: { effective }, set: { granularityOverride = $0 })
+    return spendGranularityAuto(spanDays: spanDays)
   }
   private var buckets: [(date: Date, end: Date, usage: DailyUsage)] {
     let calendar = spendCalendar()
@@ -264,21 +269,16 @@ struct DailySpendChart: View {
   private var headerTitle: String { showsGranularity ? effective.spendTitle : title }
   var body: some View {
     let effective = self.effective
+    let calendar = spendCalendar()
+    let domain = spendChartDomain(scale, granularity: effective, calendar: calendar)
+    let axisDates = spendAxisDates(
+      in: domain, granularity: effective, bars: showsGranularity ? nil : buckets.map { $0.date },
+      calendar: calendar)
+    let axisMarks = axisDates.map { spendAxisPlacement($0, in: axisDates, domain: domain) }
     VStack(alignment: .leading, spacing: 18) {
       HStack {
         SectionLabel(title: headerTitle, detail: "API-equivalent USD")
         Spacer()
-        if showsGranularity {
-          Picker("Granularity", selection: granularityBinding) {
-            ForEach(SpendGranularity.allCases) { option in
-              Text(option.label).tag(option)
-            }
-          }
-          .pickerStyle(.segmented)
-          .frame(width: 220)
-          .labelsHidden()
-          .accessibilityLabel("Spend granularity")
-        }
         if let scope {
           Picker("Models", selection: scope) {
             ForEach(CursorModelScope.allCases) { option in
@@ -294,19 +294,19 @@ struct DailySpendChart: View {
       Chart {
         ForEach(buckets, id: \.usage.id) { bucket in
           BarMark(
-            x: .value("Day", bucket.date, unit: effective.unit),
+            x: .value("Day", bucket.date, unit: effective.unit, calendar: calendar),
             y: .value("Usage", bucket.usage.cost)
           )
           .foregroundStyle(color).cornerRadius(3)
           .accessibilityLabel(bucket.usage.date).accessibilityValue(currency(bucket.usage.cost))
         }
         if let selected {
-          RuleMark(x: .value("Day", selected, unit: effective.unit))
+          RuleMark(x: .value("Day", selected, unit: effective.unit, calendar: calendar))
             .foregroundStyle(.secondary.opacity(0.4))
         }
       }
       .chartXSelection(value: snappedSelection($selected, granularity: effective))
-      .chartXScale(domain: scale)
+      .chartXScale(domain: domain)
       .chartYAxis {
         AxisMarks(position: .leading) { _ in
           AxisGridLine().foregroundStyle(BurnTheme.line)
@@ -314,14 +314,11 @@ struct DailySpendChart: View {
         }
       }
       .chartXAxis {
-        AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-          if effective == .monthly {
-            AxisValueLabel(format: .dateTime.month(.abbreviated).year()).foregroundStyle(
-              BurnTheme.muted)
-          } else {
-            AxisValueLabel(format: .dateTime.month(.abbreviated).day()).foregroundStyle(
-              BurnTheme.muted)
+        AxisMarks(values: axisMarks.map { $0.position }) { value in
+          AxisValueLabel(anchor: axisMarks[value.index].anchor) {
+            Text(axisDates[value.index].formatted(effective.axisFormat))
           }
+          .foregroundStyle(BurnTheme.muted)
         }
       }
       .frame(height: 150)
@@ -422,8 +419,6 @@ struct SourceUsageView: View {
           Text(subscription?.plan ?? "Harness usage").font(.system(size: 11)).foregroundStyle(
             BurnTheme.quotaMuted)
         }
-        Spacer()
-        PeriodPicker(width: 130).controlSize(.small)
       }
       .padding(.horizontal, 4)
       if let error = store.errors["summary"] { ReportNotice(message: error) }
@@ -459,6 +454,7 @@ struct SourceUsageView: View {
         } else if agent == "claude" {
           ClaudeAccountView(account: store.summary?.claudeAccount, plan: subscription)
         }
+        PeriodBar().controlSize(.small)
         HStack(spacing: 10) {
           MetricTile(
             title: "Spend", value: currency(usage.totalCost),
@@ -529,6 +525,7 @@ struct SourceUsageView: View {
           .burnCard(padding: 14, radius: 12)
         }
       } else {
+        PeriodBar().controlSize(.small)
         ReportNotice(
           message: store.isLoading
             ? "Reading harness usage…"
@@ -541,14 +538,55 @@ struct SourceUsageView: View {
   }
 }
 
-struct PeriodPicker: View {
+extension UsagePeriod {
+  static let segments: [UsagePeriod] = [.today, .week, .month, .all]
+  static let more: [UsagePeriod] = [.yesterday, .wtd, .mtd, .ytd, .rtd]
+  var segmentLabel: String {
+    switch self {
+    case .week: "7 days"
+    case .month: "30 days"
+    default: label
+    }
+  }
+  var moreLabel: String { Self.segments.contains(self) ? "More" : label }
+}
+
+func periodSelection(_ period: Binding<UsagePeriod>, in options: [UsagePeriod])
+  -> Binding<UsagePeriod?>
+{
+  Binding(
+    get: { options.contains(period.wrappedValue) ? period.wrappedValue : nil },
+    set: { if let value = $0 { period.wrappedValue = value } })
+}
+
+struct PeriodBar: View {
   @Environment(UsageStore.self) private var store
-  var width: CGFloat = 160
   var body: some View {
     @Bindable var store = store
-    Picker("Period", selection: $store.period) {
-      ForEach(UsagePeriod.allCases) { period in Text(period.label).tag(period) }
-    }.labelsHidden().frame(width: width)
+    HStack(spacing: 8) {
+      Picker("Period", selection: periodSelection($store.period, in: UsagePeriod.segments)) {
+        ForEach(UsagePeriod.segments) { period in
+          Text(period.segmentLabel).tag(Optional(period))
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      let active = UsagePeriod.more.contains(store.period)
+      Menu {
+        Picker("More periods", selection: periodSelection($store.period, in: UsagePeriod.more)) {
+          ForEach(UsagePeriod.more) { period in Text(period.label).tag(Optional(period)) }
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+      } label: {
+        Text(store.period.moreLabel).foregroundStyle(active ? BurnTheme.flameLabel : BurnTheme.ink)
+      }
+      .fixedSize()
+      .help("More periods")
+      .accessibilityLabel("More periods")
+      .accessibilityValue(active ? store.period.label : "")
+    }
   }
 }
 

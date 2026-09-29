@@ -13,6 +13,10 @@ enum BurnTheme {
   static let flame = adaptiveQuotaColor(
     light: NSColor(red: 0.86, green: 0.36, blue: 0.05, alpha: 1),
     dark: NSColor(red: 1, green: 0.52, blue: 0.2, alpha: 1))
+  // Flame text on the light control bezel is about 3:1; this light variant is above 4.5:1.
+  static let flameLabel = adaptiveQuotaColor(
+    light: NSColor(red: 0.62, green: 0.25, blue: 0.02, alpha: 1),
+    dark: NSColor(red: 1, green: 0.52, blue: 0.2, alpha: 1))
   static let card = adaptiveQuotaColor(
     light: NSColor(white: 1, alpha: 0.9), dark: NSColor(white: 1, alpha: 0.055))
   static let cardStroke = adaptiveQuotaColor(

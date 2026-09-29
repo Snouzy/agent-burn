@@ -37,8 +37,6 @@ struct NativeUsageView: View {
           Text("\(store.period.label) · usage from your logs and connected providers")
             .font(.system(size: 12)).foregroundStyle(.secondary)
         }
-        Spacer()
-        PeriodPicker()
       }
       if store.summary == nil, let error = store.errors["summary"] {
         ReportNotice(message: error)
@@ -46,10 +44,11 @@ struct NativeUsageView: View {
       if store.summary != nil {
         meters
 
+        PeriodBar()
         HStack(spacing: 14) {
           MetricTile(
-            title: "Total spend", value: currency(cost), detail: "API-equivalent value",
-            symbol: "dollarsign"
+            title: "Total spend", value: currency(cost),
+            detail: store.period.label + " · API-equivalent", symbol: "dollarsign"
           )
           .burnCard()
           MetricTile(
@@ -161,6 +160,7 @@ struct NativeUsageView: View {
         }.font(.caption).foregroundStyle(.secondary)
       } else {
         if let agent, ["codex", "claude"].contains(agent) { quotaSection(agent) }
+        PeriodBar()
         ContentUnavailableView {
           Label(
             store.isLoading ? "Loading usage history" : "No report available",
@@ -413,7 +413,6 @@ private struct ActivityChart: View {
   var scope: Binding<CursorModelScope>? = nil
   var series: [AgentUsage] = []
   @State private var selected: Date?
-  @State private var granularityOverride: SpendGranularity?
   private var points: [(date: Date, usage: DailyUsage)] {
     days.compactMap { usage in
       guard let date = usageDayDate(usage.date) else { return nil }
@@ -429,12 +428,7 @@ private struct ActivityChart: View {
     return today...today
   }
   private var spanDays: Int { spendSpanDays(lower: scale.lowerBound, upper: scale.upperBound) }
-  private var effective: SpendGranularity {
-    granularityOverride ?? spendGranularityAuto(spanDays: spanDays)
-  }
-  private var granularityBinding: Binding<SpendGranularity> {
-    Binding(get: { effective }, set: { granularityOverride = $0 })
-  }
+  private var effective: SpendGranularity { spendGranularityAuto(spanDays: spanDays) }
   private var buckets: [(date: Date, end: Date, usage: DailyUsage)] {
     let calendar = spendCalendar()
     return bucketDailyUsage(days, granularity: effective, calendar: calendar).compactMap { usage in
@@ -458,6 +452,10 @@ private struct ActivityChart: View {
   var body: some View {
     let buckets = self.buckets
     let stacked = self.stacked
+    let calendar = spendCalendar()
+    let domain = spendChartDomain(scale, granularity: effective, calendar: calendar)
+    let axisDates = spendAxisDates(in: domain, granularity: effective, calendar: calendar)
+    let axisMarks = axisDates.map { spendAxisPlacement($0, in: axisDates, domain: domain) }
     let selectedBucket = selected.flatMap { selected in
       buckets.first { selected >= $0.date && selected <= $0.end }
     }
@@ -465,15 +463,6 @@ private struct ActivityChart: View {
       HStack {
         IconBadge(symbol: "chart.bar.fill", tint: color)
         Text(effective.spendTitle).font(.system(size: 13, weight: .semibold))
-        Picker("Granularity", selection: granularityBinding) {
-          ForEach(SpendGranularity.allCases) { option in
-            Text(option.label).tag(option)
-          }
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 220)
-        .labelsHidden()
-        .accessibilityLabel("Spend granularity")
         if let scope {
           Picker("Models", selection: scope) {
             ForEach(CursorModelScope.allCases) { option in
@@ -500,7 +489,7 @@ private struct ActivityChart: View {
         if stacked.isEmpty {
           ForEach(buckets, id: \.usage.id) { bucket in
             BarMark(
-              x: .value("Day", bucket.date, unit: effective.unit),
+              x: .value("Day", bucket.date, unit: effective.unit, calendar: calendar),
               y: .value("Spend", bucket.usage.cost)
             )
             .foregroundStyle(color.gradient).cornerRadius(3)
@@ -512,7 +501,7 @@ private struct ActivityChart: View {
         } else {
           ForEach(stacked) { segment in
             BarMark(
-              x: .value("Day", segment.date, unit: effective.unit),
+              x: .value("Day", segment.date, unit: effective.unit, calendar: calendar),
               y: .value("Spend", segment.cost)
             )
             .foregroundStyle(BurnTheme.color(for: segment.agent).gradient)
@@ -522,7 +511,7 @@ private struct ActivityChart: View {
           }
         }
         if let bucket = selectedBucket {
-          RuleMark(x: .value("Day", bucket.date, unit: effective.unit))
+          RuleMark(x: .value("Day", bucket.date, unit: effective.unit, calendar: calendar))
             .foregroundStyle(color.opacity(0.25))
             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
             .annotation(
@@ -564,7 +553,7 @@ private struct ActivityChart: View {
       }
       .animation(.easeOut(duration: 0.15), value: selectedBucket?.usage.id)
       .chartXSelection(value: snappedSelection($selected, granularity: effective))
-      .chartXScale(domain: scale)
+      .chartXScale(domain: domain)
       .chartYAxis {
         AxisMarks(position: .leading) { _ in
           AxisGridLine()
@@ -572,11 +561,9 @@ private struct ActivityChart: View {
         }
       }
       .chartXAxis {
-        AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-          if effective == .monthly {
-            AxisValueLabel(format: .dateTime.month(.abbreviated).year())
-          } else {
-            AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+        AxisMarks(values: axisMarks.map { $0.position }) { value in
+          AxisValueLabel(anchor: axisMarks[value.index].anchor) {
+            Text(axisDates[value.index].formatted(effective.axisFormat))
           }
         }
       }
