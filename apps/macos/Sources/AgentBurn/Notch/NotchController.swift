@@ -6,6 +6,8 @@ import SwiftUI
   static let shared = NotchController()
 
   private(set) var openAgent: String?
+  // The panel is not part of a SwiftUI scene, so it has no openWindow action of its own.
+  @ObservationIgnored var showDashboard: (() -> Void)?
   private var store: UsageStore?
   private var panel: NSPanel?
   private var ringCount = 0
@@ -25,6 +27,14 @@ import SwiftUI
   func open(_ agent: String) {
     cancelClose()
     openAgent = agent
+    updatePassThrough()
+  }
+
+  func openDashboard(_ agent: String) {
+    cancelClose()
+    openAgent = nil
+    store?.selection = agent
+    showDashboard?()
     updatePassThrough()
   }
 
@@ -174,12 +184,26 @@ struct NotchRoot: View {
           .frame(width: NotchModel.notchDepth)
           .contentShape(Rectangle())
           .onHover { $0 ? controller.open(ring.agent) : controller.scheduleClose() }
+          .onTapGesture { controller.openDashboard(ring.agent) }
       }
     }
     .padding(.top, NotchModel.curl + NotchModel.padTop)
     .padding(.bottom, NotchModel.curl + NotchModel.padBottom)
     .frame(width: NotchModel.notchDepth, height: NotchModel.notchHeight(ringCount: rings.count))
     .background(NotchShape().fill(.black))
+  }
+}
+
+struct NotchDashboardLink: ViewModifier {
+  @Environment(\.openWindow) private var openWindow
+
+  func body(content: Content) -> some View {
+    content.onAppear {
+      NotchController.shared.showDashboard = {
+        openWindow(id: "overview")
+        NSApp.activate(ignoringOtherApps: true)
+      }
+    }
   }
 }
 

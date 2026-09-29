@@ -38,7 +38,8 @@ struct AgentBurnApp: App {
     } label: {
       // TimelineView in a MenuBarExtra label can continuously invalidate the status item.
       MenuBarLabel(
-        remaining: store.remainingPercent, stale: store.quotaIsStale(at: store.quotaCheckDate))
+        remaining: store.remainingPercent, stale: store.quotaIsStale(at: store.quotaCheckDate)
+      ).modifier(NotchDashboardLink())
     }
     .menuBarExtraStyle(.window)
     Settings { SettingsView().environment(store) }

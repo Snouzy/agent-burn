@@ -564,3 +564,22 @@ private struct NotchCardsHost: View {
     #expect((full == nil) == (agent == "opencode"), "\(agent)")
   }
 }
+
+@Test @MainActor func notchRingClickOpensTheDashboardOnThatAgent() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  let controller = NotchController.shared
+  var opened = 0
+  controller.attach(store)
+  controller.showDashboard = { opened += 1 }
+  defer {
+    controller.showDashboard = nil
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  controller.open("codex")
+  controller.openDashboard("claude")
+  #expect(store.selection == "claude")
+  #expect(opened == 1)
+  #expect(controller.openAgent == nil)
+}
