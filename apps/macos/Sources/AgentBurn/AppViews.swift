@@ -259,7 +259,7 @@ private struct DashboardSidebar: View {
         cursorAccount: store.summary?.cursorAccount,
         claudeAccount: store.summary?.claudeAccount)
     {
-      let tone: Color = remaining < 15 ? BurnTheme.behind : remaining < 35 ? .orange : .green
+      let tone = BurnTheme.remainingTone(remaining)
       Text(menuBarQuotaText(remaining))
         .font(.system(size: 10, weight: .semibold)).monospacedDigit()
         .foregroundStyle(tone)

@@ -233,9 +233,9 @@ private func utcDate(year: Int = 2027, month: Int = 1, day: Int, hour: Int = 0) 
   #expect(segments[1].points.contains { $0.recorded < $0.ideal })
 }
 
-@Test func quotaChartRecordedStrokeTurnsRedWhenBehindPace() {
-  #expect(quotaChartRecordedStroke(ahead: true, color: .purple) == .purple)
-  #expect(quotaChartRecordedStroke(ahead: false, color: .purple) == BurnTheme.behind)
+@Test func quotaChartRecordedStrokeFollowsThePace() {
+  #expect(quotaChartRecordedStroke(ahead: true) == BurnTheme.ahead)
+  #expect(quotaChartRecordedStroke(ahead: false) == BurnTheme.behind)
 }
 
 @Test func quotaChartDrawnSamplesKeepsLiveRemainingSteps() {

@@ -205,7 +205,8 @@ struct ClaudeMeterRow: View {
           .font(.subheadline.weight(.semibold)).monospacedDigit()
       }
       if let used {
-        ProgressView(value: max(0, min(100, 100 - used)), total: 100).tint(.orange)
+        let remaining = max(0, min(100, 100 - used))
+        ProgressView(value: remaining, total: 100).tint(BurnTheme.remainingTone(remaining))
           .accessibilityHidden(true)
       }
     }

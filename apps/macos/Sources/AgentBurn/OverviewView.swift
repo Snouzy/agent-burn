@@ -93,7 +93,7 @@ struct OverviewView: View {
   }
 
   private func quotaTile(_ source: QuotaSource, remaining: Double) -> some View {
-    let tone: Color = remaining < 15 ? BurnTheme.behind : remaining < 35 ? .orange : .green
+    let tone = BurnTheme.remainingTone(remaining)
     return Button {
       withAnimation(.snappy) { store.selection = source.rawValue }
     } label: {
