@@ -206,6 +206,20 @@ struct QuotaSummary: View {
   }
 }
 
+/// `chartXSelection` writes on every mouse move, and each write re-renders the whole chart.
+func snappedSelection(
+  _ selection: Binding<Date?>, granularity: SpendGranularity, calendar: Calendar = spendCalendar()
+) -> Binding<Date?> {
+  Binding(
+    get: { selection.wrappedValue },
+    set: { date in
+      let start = date.map {
+        spendBucketStart(for: $0, granularity: granularity, calendar: calendar)
+      }
+      if start != selection.wrappedValue { selection.wrappedValue = start }
+    })
+}
+
 struct DailySpendChart: View {
   let title: String
   let days: [DailyUsage]
@@ -239,6 +253,7 @@ struct DailySpendChart: View {
   }
   private var buckets: [(date: Date, end: Date, usage: DailyUsage)] {
     let calendar = spendCalendar()
+    let effective = self.effective
     return bucketDailyUsage(days, granularity: effective, calendar: calendar).compactMap { usage in
       guard let start = usageDayDate(usage.date) else { return nil }
       return (
@@ -248,6 +263,7 @@ struct DailySpendChart: View {
   }
   private var headerTitle: String { showsGranularity ? effective.spendTitle : title }
   var body: some View {
+    let effective = self.effective
     VStack(alignment: .leading, spacing: 18) {
       HStack {
         SectionLabel(title: headerTitle, detail: "API-equivalent USD")
@@ -285,10 +301,11 @@ struct DailySpendChart: View {
           .accessibilityLabel(bucket.usage.date).accessibilityValue(currency(bucket.usage.cost))
         }
         if let selected {
-          RuleMark(x: .value("Day", selected)).foregroundStyle(.secondary.opacity(0.4))
+          RuleMark(x: .value("Day", selected, unit: effective.unit))
+            .foregroundStyle(.secondary.opacity(0.4))
         }
       }
-      .chartXSelection(value: $selected)
+      .chartXSelection(value: snappedSelection($selected, granularity: effective))
       .chartXScale(domain: scale)
       .chartYAxis {
         AxisMarks(position: .leading) { _ in

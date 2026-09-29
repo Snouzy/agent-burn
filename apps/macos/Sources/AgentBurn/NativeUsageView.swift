@@ -444,10 +444,6 @@ private struct ActivityChart: View {
       )
     }
   }
-  private var selectedBucket: (date: Date, end: Date, usage: DailyUsage)? {
-    guard let selected else { return nil }
-    return buckets.first { selected >= $0.date && selected <= $0.end }
-  }
   // Largest harness first so it sits at the bottom of every stacked bar.
   private var stacked: [SpendSegment] {
     let calendar = spendCalendar()
@@ -460,6 +456,11 @@ private struct ActivityChart: View {
     }
   }
   var body: some View {
+    let buckets = self.buckets
+    let stacked = self.stacked
+    let selectedBucket = selected.flatMap { selected in
+      buckets.first { selected >= $0.date && selected <= $0.end }
+    }
     VStack(alignment: .leading, spacing: 16) {
       HStack {
         IconBadge(symbol: "chart.bar.fill", tint: color)
@@ -562,7 +563,7 @@ private struct ActivityChart: View {
         }
       }
       .animation(.easeOut(duration: 0.15), value: selectedBucket?.usage.id)
-      .chartXSelection(value: $selected)
+      .chartXSelection(value: snappedSelection($selected, granularity: effective))
       .chartXScale(domain: scale)
       .chartYAxis {
         AxisMarks(position: .leading) { _ in

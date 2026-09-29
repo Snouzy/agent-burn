@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import AgentBurn
@@ -412,4 +413,80 @@ private func spendTestCalendar() -> Calendar {
     quotaDayKey(spendBucketStart(for: wednesday, granularity: .monthly, calendar: calendar))
       == "2026-09-01")
   #expect(spendSpanDays(lower: wednesday, upper: wednesday) == 1)
+}
+
+@MainActor private final class SelectionSpy {
+  var value: Date?
+  var writes = 0
+  var binding: Binding<Date?> {
+    Binding(
+      get: { self.value },
+      set: {
+        self.value = $0
+        self.writes += 1
+      })
+  }
+}
+
+private func hoverCalendar() -> Calendar {
+  var calendar = spendTestCalendar()
+  calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+  return calendar
+}
+
+private func hoverDate(month: Int = 9, day: Int, hour: Int) -> Date {
+  hoverCalendar().date(from: DateComponents(year: 2026, month: month, day: day, hour: hour))!
+}
+
+@MainActor private func hover(_ pointer: [Date?], granularity: SpendGranularity)
+  -> (seen: [Date?], writes: Int)
+{
+  let spy = SelectionSpy()
+  let selection = snappedSelection(
+    spy.binding, granularity: granularity, calendar: hoverCalendar())
+  let seen = pointer.map { date -> Date? in
+    selection.wrappedValue = date
+    return selection.wrappedValue
+  }
+  return (seen, spy.writes)
+}
+
+@Test @MainActor func snappedSelectionWritesOncePerDailyBar() {
+  let result = hover(
+    [
+      hoverDate(day: 28, hour: 1), hoverDate(day: 28, hour: 23), hoverDate(day: 29, hour: 0), nil,
+      nil,
+    ], granularity: .daily)
+  #expect(
+    result.seen == [
+      hoverDate(day: 28, hour: 0), hoverDate(day: 28, hour: 0), hoverDate(day: 29, hour: 0), nil,
+      nil,
+    ])
+  #expect(result.writes == 3)
+}
+
+@Test @MainActor func snappedSelectionWritesOncePerISOWeekBar() {
+  // Sunday still belongs to the Monday week; a Sunday-first calendar would start a new bar.
+  let result = hover(
+    [hoverDate(day: 23, hour: 10), hoverDate(day: 27, hour: 22), hoverDate(day: 28, hour: 1)],
+    granularity: .weekly)
+  #expect(
+    result.seen == [
+      hoverDate(day: 21, hour: 0), hoverDate(day: 21, hour: 0), hoverDate(day: 28, hour: 0),
+    ])
+  #expect(result.writes == 2)
+}
+
+@Test @MainActor func snappedSelectionWritesOncePerMonthlyBar() {
+  let result = hover(
+    [
+      hoverDate(day: 1, hour: 8), hoverDate(day: 30, hour: 20),
+      hoverDate(month: 10, day: 1, hour: 0),
+    ],
+    granularity: .monthly)
+  #expect(
+    result.seen == [
+      hoverDate(day: 1, hour: 0), hoverDate(day: 1, hour: 0), hoverDate(month: 10, day: 1, hour: 0),
+    ])
+  #expect(result.writes == 2)
 }

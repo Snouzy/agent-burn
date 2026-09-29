@@ -147,7 +147,7 @@ struct CodexLimitUsageChart: View {
         }
       }
       .chartForegroundStyleScale(domain: seriesOrder)
-      .chartXSelection(value: $selected)
+      .chartXSelection(value: snappedSelection($selected, granularity: .daily))
       .chartYAxis {
         AxisMarks(position: .leading) { value in
           AxisGridLine()
