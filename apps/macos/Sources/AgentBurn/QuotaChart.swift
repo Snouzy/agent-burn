@@ -1,8 +1,8 @@
 import Charts
 import SwiftUI
 
-func quotaChartRecordedStroke(ahead: Bool, color: Color) -> Color {
-  ahead ? color : BurnTheme.behind
+func quotaChartRecordedStroke(ahead: Bool) -> Color {
+  ahead ? BurnTheme.ahead : BurnTheme.behind
 }
 
 struct QuotaChart: View {
@@ -169,7 +169,7 @@ struct QuotaChart: View {
             y: .value("Remaining", point.recorded),
             series: .value("Series", "Recorded \(index)")
           )
-          .foregroundStyle(quotaChartRecordedStroke(ahead: segment.ahead, color: color))
+          .foregroundStyle(quotaChartRecordedStroke(ahead: segment.ahead))
           .lineStyle(StrokeStyle(lineWidth: 2.5))
           .interpolationMethod(.linear)
         }
@@ -292,15 +292,13 @@ struct QuotaChart: View {
   }
 
   private var cursorStroke: Color {
-    quotaChartRecordedStroke(ahead: (reading.paceDelta ?? 0) >= 0, color: color)
+    quotaChartRecordedStroke(ahead: (reading.paceDelta ?? 0) >= 0)
   }
 
   private var forecastStroke: Color {
     quotaChartRecordedStroke(
       ahead: forecast.remaining
-        >= quotaChartIdealRemaining(
-          at: forecast.observedAt, forecast: forecast),
-      color: color)
+        >= quotaChartIdealRemaining(at: forecast.observedAt, forecast: forecast))
   }
 
   private var headerSeries: some View {
