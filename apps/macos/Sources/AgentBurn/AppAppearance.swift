@@ -14,6 +14,22 @@ import SwiftUI
     }
   }
 
+  var showsNotch: Bool {
+    didSet {
+      defaults.set(showsNotch, forKey: "showsNotch")
+      onNotchChange?(showsNotch)
+    }
+  }
+
+  var notchDisplay: String? {
+    didSet {
+      defaults.set(notchDisplay, forKey: "notchDisplay")
+      onNotchChange?(showsNotch)
+    }
+  }
+
+  var onNotchChange: ((Bool) -> Void)?
+
   init(
     defaults: UserDefaults = .standard,
     applyPolicy: @escaping (NSApplication.ActivationPolicy) -> Void = {
@@ -23,6 +39,8 @@ import SwiftUI
     self.defaults = defaults
     self.applyPolicy = applyPolicy
     menuBarOnly = defaults.bool(forKey: "menuBarOnly")
+    showsNotch = defaults.bool(forKey: "showsNotch")
+    notchDisplay = defaults.string(forKey: "notchDisplay")
   }
 
   func apply() { applyPolicy(menuBarOnly ? .accessory : .regular) }
@@ -33,6 +51,8 @@ import SwiftUI
     NSApp.applicationIconImage = AppLogo.window
     applyWindowLogo()
     AppAppearance.shared.apply()
+    NotchController.shared.apply(AppAppearance.shared.showsNotch)
+    AppAppearance.shared.onNotchChange = { NotchController.shared.apply($0) }
     if AppAppearance.shared.menuBarOnly {
       // SwiftUI has finished creating its initial dashboard at this point.
       for window in NSApplication.shared.windows where window.title == "Agent Burn" {
@@ -55,6 +75,7 @@ import SwiftUI
 
 struct AppearanceSettings: View {
   @Bindable private var appearance = AppAppearance.shared
+  @State private var screens = NSScreen.screens
   var body: some View {
     Section("Appearance") {
       Toggle("Menu bar only", isOn: $appearance.menuBarOnly)
@@ -62,6 +83,29 @@ struct AppearanceSettings: View {
         "Hide Agent Burn from the Dock and Command-Tab. Open the dashboard and Settings from the menu bar. This choice is remembered when the app restarts."
       )
       .font(.caption).foregroundStyle(.secondary)
+      Toggle("Show notch", isOn: $appearance.showsNotch)
+      Text(
+        "Pins your limits to the right edge of the screen. Hover a ring to see the reset, the forecast and what your use would cost at API prices."
+      )
+      .font(.caption).foregroundStyle(.secondary)
+      Picker("Display", selection: $appearance.notchDisplay) {
+        Text("Automatic").tag(String?.none)
+        ForEach(screens.filter { $0.displayIdentifier != nil }, id: \.self) { screen in
+          Text(screen.localizedName).tag(screen.displayIdentifier)
+        }
+        if let chosen = appearance.notchDisplay,
+          !screens.contains(where: { $0.displayIdentifier == chosen })
+        {
+          Text("Disconnected display").tag(String?.some(chosen))
+        }
+      }
+      .disabled(!appearance.showsNotch)
+      .onReceive(
+        NotificationCenter.default.publisher(
+          for: NSApplication.didChangeScreenParametersNotification)
+      ) { _ in screens = NSScreen.screens }
+      Text("Automatic uses the screen furthest right.")
+        .font(.caption).foregroundStyle(.secondary)
     }
   }
 }
