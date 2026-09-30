@@ -40,7 +40,7 @@ extension NotchModel {
     let stale = !forecast.isFresh(at: now) || store.quotaError(for: agent) != nil
     return NotchCardData(
       agent: agent, title: harnessName(agent), plan: plan, forecast: forecast,
-      samples: store.samples(for: agent, range: range),
+      samples: store.samples(for: agent, range: range, now: now),
       staleText: stale ? savedReading(forecast.observedAt, now: now) : nil,
       spend: spend, models: models, style: style(for: agent), range: range)
   }

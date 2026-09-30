@@ -8,19 +8,33 @@ import SwiftUI
   private(set) var openAgent: String?
   // The panel is not part of a SwiftUI scene, so it has no openWindow action of its own.
   @ObservationIgnored var showDashboard: (() -> Void)?
+  private(set) var disk: DiskSpace?
+  private let appearance: AppAppearance
+  private let readDisk: () -> DiskSpace?
+  private let openURL: (URL) -> Void
   private var store: UsageStore?
   private var panel: NSPanel?
-  private var ringCount = 0
+  private var agentCount = 0
+  var ringCount: Int { agentCount + (disk == nil ? 0 : 1) }
   private var cardHeight: CGFloat?
   private var monitors: [Any] = []
   private var screenObserver: (any NSObjectProtocol)?
   private var pendingClose: Task<Void, Never>?
 
-  private init() {}
+  init(
+    appearance: AppAppearance = .shared,
+    readDisk: @escaping () -> DiskSpace? = DiskSpace.startupDisk,
+    openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
+  ) {
+    self.appearance = appearance
+    self.readDisk = readDisk
+    self.openURL = openURL
+  }
 
   func attach(_ store: UsageStore) { self.store = store }
 
   func apply(_ on: Bool) {
+    if on { refreshDisk() }
     if !on { hide() } else if panel == nil { show() } else { place() }
   }
 
@@ -36,6 +50,10 @@ import SwiftUI
     store?.selection = agent
     showDashboard?()
     updatePassThrough()
+  }
+
+  func openStorage() {
+    openURL(URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!)
   }
 
   func scheduleClose() {
@@ -54,8 +72,16 @@ import SwiftUI
     pendingClose = nil
   }
 
+  func refreshDisk() {
+    let next = appearance.showsDiskSpace ? readDisk() : nil
+    guard next?.drawn != disk?.drawn else { return }
+    let resized = (next == nil) != (disk == nil)
+    disk = next
+    if resized { place() }
+  }
+
   func ringsChanged(_ agents: [String]) {
-    ringCount = agents.count
+    agentCount = agents.count
     if let openAgent, !agents.contains(openAgent) {
       cancelClose()
       self.openAgent = nil
@@ -129,7 +155,7 @@ import SwiftUI
   private func place() {
     guard let panel,
       let screen = NotchModel.screen(
-        from: NSScreen.screens, preference: AppAppearance.shared.notchDisplay,
+        from: NSScreen.screens, preference: appearance.notchDisplay,
         id: \.displayIdentifier, frame: \.frame)
     else { return }
     panel.setFrame(
@@ -157,27 +183,30 @@ import SwiftUI
 struct NotchRoot: View {
   let controller: NotchController
   let store: UsageStore
+  @State private var diskHovered = false
 
   var body: some View {
     let now = store.quotaCheckDate
     let rings = NotchModel.rings(store: store, now: now)
+    let disk = controller.disk
     ZStack(alignment: .trailing) {
-      if !rings.isEmpty {
+      if !rings.isEmpty || disk != nil {
         HStack(spacing: NotchModel.cardGap) {
           NotchCardStack(controller: controller, store: store, now: now)
-          notch(rings)
+          notch(rings, disk: disk)
         }
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
     .onChange(of: rings.map(\.agent), initial: true) { controller.ringsChanged($1) }
+    .onChange(of: now) { controller.refreshDisk() }
     .onChange(
       of: controller.openAgent.flatMap { NotchModel.cardHeight(store: store, agent: $0) },
       initial: true
     ) { controller.cardHeightChanged($1) }
   }
 
-  private func notch(_ rings: [NotchRing]) -> some View {
+  private func notch(_ rings: [NotchRing], disk: DiskSpace?) -> some View {
     VStack(spacing: NotchModel.cellSpacing) {
       ForEach(rings) { ring in
         UsageRing(ring: ring, highlighted: controller.openAgent == ring.agent)
@@ -186,10 +215,25 @@ struct NotchRoot: View {
           .onHover { $0 ? controller.open(ring.agent) : controller.scheduleClose() }
           .onTapGesture { controller.openDashboard(ring.agent) }
       }
+      if let disk {
+        DiskRing(disk: disk, highlighted: diskHovered)
+          .frame(width: NotchModel.notchDepth)
+          .contentShape(Rectangle())
+          .onHover { hovering in
+            diskHovered = hovering
+            if hovering { controller.scheduleClose() }
+          }
+          .onTapGesture { controller.openStorage() }
+          .accessibilityAddTraits(.isButton)
+          .onDisappear { diskHovered = false }
+      }
     }
     .padding(.top, NotchModel.curl + NotchModel.padTop)
     .padding(.bottom, NotchModel.curl + NotchModel.padBottom)
-    .frame(width: NotchModel.notchDepth, height: NotchModel.notchHeight(ringCount: rings.count))
+    .frame(
+      width: NotchModel.notchDepth,
+      height: NotchModel.notchHeight(ringCount: rings.count + (disk == nil ? 0 : 1))
+    )
     .background(NotchShape().fill(.black))
   }
 }

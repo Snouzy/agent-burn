@@ -583,3 +583,194 @@ private struct NotchCardsHost: View {
   #expect(opened == 1)
   #expect(controller.openAgent == nil)
 }
+
+@Test func notchDiskFreePercentIsTheFreeShareOfTheDisk() {
+  #expect(DiskSpace(free: 123_500_000_000, total: 494_000_000_000).freePercent == 25)
+  #expect(DiskSpace(free: 0, total: 494_000_000_000).freePercent == 0)
+}
+
+@Test func notchDiskLabelCountsInDecimalUnitsLikeFinder() {
+  let us = Locale(identifier: "en_US")
+  #expect(DiskSpace.label(bytes: 15_170_000_000, locale: us) == "15 GB")
+  #expect(DiskSpace.label(bytes: 8_400_000_000, locale: us) == "8.4 GB")
+  #expect(DiskSpace.label(bytes: 1_200_000_000_000, locale: us) == "1.2 TB")
+  #expect(DiskSpace.label(bytes: 9_970_000_000, locale: us) == "10 GB")
+  #expect(DiskSpace.label(bytes: 999_700_000_000, locale: us) == "1.0 TB")
+  #expect(
+    DiskSpace.label(bytes: 15_170_000_000, locale: Locale(identifier: "fr_FR")).hasSuffix("Go"))
+  let disk = DiskSpace(free: 15_170_000_000, total: 494_384_795_648)
+  #expect(
+    disk.voiceOverLabel(locale: us) == "Startup disk, 15 gigabytes free of 494 gigabytes")
+}
+
+@Test func notchDiskReadsTheStartupVolumeLikeFoundation() throws {
+  let disk = try #require(DiskSpace.startupDisk())
+  let volume = try URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeTotalCapacityKey])
+  #expect(disk.total == Int64(try #require(volume.volumeTotalCapacity)))
+  #expect(disk.free > 0 && disk.free < disk.total)
+}
+
+@Test @MainActor func notchDiskSwitchDefaultsOffAndPersists() throws {
+  let suite = "AgentBurn.notch.disk.\(UUID().uuidString)"
+  let defaults = try #require(UserDefaults(suiteName: suite))
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let appearance = AppAppearance(defaults: defaults, applyPolicy: { _ in })
+  var changes: [Bool] = []
+  appearance.onNotchChange = { changes.append($0) }
+  #expect(!appearance.showsDiskSpace)
+  appearance.showsDiskSpace = true
+  #expect(AppAppearance(defaults: defaults, applyPolicy: { _ in }).showsDiskSpace)
+  #expect(changes == [false])
+}
+
+@MainActor private func notchAppearanceFixture(showsDiskSpace: Bool) -> (
+  appearance: AppAppearance, suite: String
+) {
+  let suite = "AgentBurn.notch.appearance.\(UUID().uuidString)"
+  let appearance = AppAppearance(defaults: UserDefaults(suiteName: suite)!, applyPolicy: { _ in })
+  appearance.showsDiskSpace = showsDiskSpace
+  return (appearance, suite)
+}
+
+private let fifteenGB = DiskSpace(free: 15_170_000_000, total: 494_384_795_648)
+
+private final class DiskReader {
+  var reading: DiskSpace? = fifteenGB
+  private(set) var reads = 0
+  func read() -> DiskSpace? {
+    reads += 1
+    return reading
+  }
+}
+
+@Test @MainActor func notchRingCountHasTheDiskRingOnlyWhenItIsOnAndReadable() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  let reader = DiskReader()
+  let controller = NotchController(appearance: appearance, readDisk: reader.read)
+  controller.ringsChanged(["codex", "claude"])
+  controller.refreshDisk()
+  #expect(controller.ringCount == 3)
+  appearance.showsDiskSpace = false
+  controller.refreshDisk()
+  #expect(controller.ringCount == 2)
+  appearance.showsDiskSpace = true
+  reader.reading = nil
+  controller.refreshDisk()
+  #expect(controller.ringCount == 2)
+  reader.reading = fifteenGB
+  controller.ringsChanged([])
+  controller.refreshDisk()
+  #expect(controller.ringCount == 1)
+}
+
+// A controller without a store never builds its panel, so apply(true) is safe here.
+@Test @MainActor func notchDiskToggleReachesTheNotchThroughItsHook() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  let reader = DiskReader()
+  let controller = NotchController(appearance: appearance, readDisk: reader.read)
+  appearance.onNotchChange = { [weak controller] in controller?.apply($0) }
+  appearance.showsNotch = true
+  #expect(reader.reads == 0)
+  appearance.showsDiskSpace = true
+  #expect(reader.reads == 1)
+  #expect(controller.disk == fifteenGB)
+  appearance.showsDiskSpace = false
+  #expect(reader.reads == 1)
+  #expect(controller.disk == nil)
+}
+
+@Test @MainActor func notchStoreTickRereadsTheDisk() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  let (appearance, appearanceSuite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    UserDefaults(suiteName: appearanceSuite)?.removePersistentDomain(forName: appearanceSuite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  let reader = DiskReader()
+  let controller = NotchController(appearance: appearance, readDisk: reader.read)
+  controller.apply(true)
+  let host = NSHostingView(rootView: NotchRoot(controller: controller, store: store))
+  host.frame = CGRect(
+    x: 0, y: 0, width: NotchModel.cardWidth + NotchModel.cardGap + NotchModel.notchDepth,
+    height: NotchModel.largestCardHeight)
+  host.layoutSubtreeIfNeeded()
+  #expect(reader.reads == 1)
+
+  reader.reading = DiskSpace(free: 14_000_000_000, total: 494_384_795_648)
+  store.quotaCheckDate.addTimeInterval(5)
+  host.layoutSubtreeIfNeeded()
+  #expect(reader.reads == 2)
+  #expect(controller.disk == reader.reading)
+}
+
+@Test @MainActor func notchDiskDriftThatKeepsTheRingKeepsTheValue() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  let reader = DiskReader()
+  let controller = NotchController(appearance: appearance, readDisk: reader.read)
+  controller.refreshDisk()
+  reader.reading = DiskSpace(free: 15_130_000_000, total: 494_384_795_648)
+  controller.refreshDisk()
+  #expect(reader.reads == 2)
+  #expect(controller.disk == fifteenGB)
+
+  let terabytes = DiskSpace(free: 1_200_000_000_000, total: 2_000_000_000_000)
+  reader.reading = terabytes
+  controller.refreshDisk()
+  reader.reading = DiskSpace(free: 1_230_000_000_000, total: 2_000_000_000_000)
+  controller.refreshDisk()
+  #expect(controller.disk == reader.reading, "same label, the arc moves from 60 % to 61 %")
+}
+
+@Test @MainActor func notchDiskClickOpensStorageSettings() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  var opened: [URL] = []
+  let controller = NotchController(appearance: appearance, openURL: { opened.append($0) })
+  controller.openStorage()
+  #expect(
+    opened.map(\.absoluteString) == ["x-apple.systempreferences:com.apple.settings.Storage"])
+}
+
+@Test @MainActor func notchDiskWidestLabelFitsTheNotch() throws {
+  let cell = NotchModel.ringDiameter + NotchModel.labelGap + NotchModel.percentLine
+  for free: Int64 in [999_400_000_000, 9_940_000_000, 8_000_000_000_000] {
+    let ring = DiskRing(disk: DiskSpace(free: free, total: 8_000_000_000_000), highlighted: false)
+      .environment(\.locale, Locale(identifier: "en_US"))
+    let size = try #require(ImageRenderer(content: ring.fixedSize()).nsImage?.size)
+    #expect(size.width <= NotchModel.notchDepth, "\(free) bytes: \(size.width) pt wide")
+    #expect(size.height == cell)
+  }
+}
+
+@Test @MainActor func notchCardChartFollowsTheStoreClockNotTheWallClock() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  store.quotaChartRange = .week
+  let wall = Date.now
+  var history = QuotaHistory()
+  for (daysAgo, used) in [(9.0, 20.0), (0.001, 40.0)] {
+    history.record(
+      QuotaReading(
+        agent: "codex",
+        observedAt: wall.addingTimeInterval(-daysAgo * 86_400).timeIntervalSince1970 * 1000,
+        window: QuotaWindow(
+          windowMinutes: 10080, usedPercent: used, elapsedPercent: 20, apiEquivalentSpent: 0)),
+      source: store.customPath + "|" + store.codexHomes)
+  }
+  try QuotaHistoryFile(directory: directory).save(history)
+  store.reloadQuotas()
+
+  let now = wall.addingTimeInterval(-3 * 86_400)
+  let card = try #require(NotchModel.card(store: store, agent: "codex", now: now))
+  #expect(
+    store.samples(for: "codex", range: .week, now: now)
+      != store.samples(for: "codex", range: .week, now: wall))
+  #expect(card.samples == store.samples(for: "codex", range: card.range, now: now))
+}

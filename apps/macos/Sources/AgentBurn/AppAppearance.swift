@@ -28,6 +28,13 @@ import SwiftUI
     }
   }
 
+  var showsDiskSpace: Bool {
+    didSet {
+      defaults.set(showsDiskSpace, forKey: "showsDiskSpace")
+      onNotchChange?(showsNotch)
+    }
+  }
+
   var onNotchChange: ((Bool) -> Void)?
 
   init(
@@ -41,6 +48,7 @@ import SwiftUI
     menuBarOnly = defaults.bool(forKey: "menuBarOnly")
     showsNotch = defaults.bool(forKey: "showsNotch")
     notchDisplay = defaults.string(forKey: "notchDisplay")
+    showsDiskSpace = defaults.bool(forKey: "showsDiskSpace")
   }
 
   func apply() { applyPolicy(menuBarOnly ? .accessory : .regular) }
@@ -105,6 +113,10 @@ struct AppearanceSettings: View {
           for: NSApplication.didChangeScreenParametersNotification)
       ) { _ in screens = NSScreen.screens }
       Text("Automatic uses the screen furthest right.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("Show free disk space", isOn: $appearance.showsDiskSpace)
+        .disabled(!appearance.showsNotch)
+      Text("Adds a ring with the free space on your startup disk.")
         .font(.caption).foregroundStyle(.secondary)
     }
   }
