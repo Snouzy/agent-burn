@@ -17,21 +17,56 @@ struct UsageRing: View {
   let ring: NotchRing
   let highlighted: Bool
   var body: some View {
-    let color = BurnTheme.color(for: ring.agent)
+    RingCell(
+      progress: ring.usedPercent / 100, color: BurnTheme.color(for: ring.agent),
+      label: "\(Int(ring.usedPercent.rounded()))%", highlighted: highlighted,
+      opacity: ring.opacity(highlighted: highlighted), voiceOverLabel: ring.voiceOverLabel
+    ) {
+      if let image = BrandImages.images[ring.agent] {
+        Image(nsImage: image).resizable().interpolation(.high).frame(width: 17, height: 17)
+      }
+    }
+  }
+}
+
+struct DiskRing: View {
+  let disk: DiskSpace
+  let highlighted: Bool
+  @Environment(\.locale) private var locale
+
+  var body: some View {
+    RingCell(
+      progress: 1 - disk.freePercent / 100, color: BurnTheme.remainingTone(disk.freePercent),
+      label: DiskSpace.label(bytes: disk.free, locale: locale), highlighted: highlighted,
+      opacity: 1, voiceOverLabel: disk.voiceOverLabel(locale: locale)
+    ) {
+      Image(systemName: "internaldrive").font(.system(size: 14)).foregroundStyle(.white)
+    }
+  }
+}
+
+private struct RingCell<Center: View>: View {
+  let progress: Double
+  let color: Color
+  let label: String
+  let highlighted: Bool
+  let opacity: Double
+  let voiceOverLabel: String
+  @ViewBuilder let center: Center
+
+  var body: some View {
     VStack(spacing: NotchModel.labelGap) {
       ZStack {
         Circle().stroke(color.opacity(highlighted ? 0.35 : 0), lineWidth: 12)
         Circle().stroke(Color.white.opacity(highlighted ? 0.26 : 0.18), lineWidth: 5.8)
         Circle()
-          .trim(from: 0, to: min(max(ring.usedPercent / 100, 0), 1))
+          .trim(from: 0, to: min(max(progress, 0), 1))
           .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
           .rotationEffect(.degrees(-90))
-        if let image = BrandImages.images[ring.agent] {
-          Image(nsImage: image).resizable().interpolation(.high).frame(width: 17, height: 17)
-        }
+        center
       }
       .frame(width: NotchModel.ringDiameter, height: NotchModel.ringDiameter)
-      Text("\(Int(ring.usedPercent.rounded()))%")
+      Text(label)
         .font(.system(size: 14, weight: .semibold))
         .monospacedDigit()
         .foregroundStyle(.white)
@@ -42,9 +77,9 @@ struct UsageRing: View {
       RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(highlighted ? 0.08 : 0))
         .padding(-7)
     )
-    .opacity(ring.opacity(highlighted: highlighted))
+    .opacity(opacity)
     .animation(.easeOut(duration: 0.15), value: highlighted)
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(ring.voiceOverLabel)
+    .accessibilityLabel(voiceOverLabel)
   }
 }
