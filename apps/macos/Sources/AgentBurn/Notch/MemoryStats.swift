@@ -15,7 +15,7 @@ struct MemoryStats: Equatable, Sendable {
   // Free memory drifts on every read. Two readings that draw the same ring share this key.
   var drawn: [String] {
     [
-      DiskSpace.label(bytes: available, locale: .current), "\(Int(availablePercent))",
+      Self.label(bytes: available, locale: .current), "\(Int(availablePercent))",
       "\(pressure)",
     ]
   }
@@ -66,9 +66,28 @@ struct MemoryStats: Equatable, Sendable {
     return pressure(level: level)
   }
 
+  /// Memory counts in binary units, as Activity Monitor does: 128 GB of RAM, not 137 GB.
+  /// Below 1 GB it shows whole megabytes, like a background helper's 560 MB.
+  static func label(
+    bytes: Int64, locale: Locale,
+    width: Measurement<UnitInformationStorage>.FormatStyle.UnitWidth = .abbreviated
+  ) -> String {
+    let gibibytes = Double(bytes) / 1_073_741_824
+    // 1,000 MB and up reads as 1.0 GB, never "1,001 MB".
+    guard (gibibytes * 1024).rounded() < 1000 else {
+      return DiskSpace.label(bytes: Int64(gibibytes * 1e9), locale: locale, width: width)
+    }
+    return Measurement(value: (gibibytes * 1024).rounded(), unit: UnitInformationStorage.megabytes)
+      .formatted(
+        .measurement(
+          width: width, usage: .asProvided, numberFormatStyle: .number.precision(.fractionLength(0))
+        )
+        .locale(locale))
+  }
+
   func voiceOverLabel(locale: Locale) -> String {
-    let available = DiskSpace.label(bytes: available, locale: locale, width: .wide)
-    let total = DiskSpace.label(bytes: total, locale: locale, width: .wide)
+    let available = Self.label(bytes: available, locale: locale, width: .wide)
+    let total = Self.label(bytes: total, locale: locale, width: .wide)
     return "Memory, \(available) available of \(total), \(pressure) pressure"
   }
 }

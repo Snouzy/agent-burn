@@ -791,7 +791,7 @@ private final class DiskReader {
   let memory = MemoryStats(available: 9_200_000_000, total: 34_359_738_368, pressure: .warning)
   #expect(
     memory.voiceOverLabel(locale: Locale(identifier: "en_US"))
-      == "Memory, 9.2 gigabytes available of 34 gigabytes, warning pressure")
+      == "Memory, 8.6 gigabytes available of 32 gigabytes, warning pressure")
 }
 
 private let nineGB = MemoryStats(available: 9_200_000_000, total: 34_359_738_368, pressure: .normal)
