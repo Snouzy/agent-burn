@@ -27,8 +27,13 @@ struct AgentUsage: Codable, Identifiable, Sendable {
   var id: String { agent }
 }
 
-/// Spend grouped by working directory. `path` is nil for the "Other" bucket of
-/// sessions that recorded no directory.
+enum ProjectKind: String, Sendable {
+  case repository, scratch, other
+}
+
+/// Spend grouped by Git repository. `path` is nil for the "Scratch" bucket of
+/// sessions outside any repository and the "Other" bucket of sessions that
+/// recorded no directory.
 struct ProjectUsage: Codable, Identifiable, Sendable, Equatable {
   let name: String
   let path: String?
@@ -36,7 +41,12 @@ struct ProjectUsage: Codable, Identifiable, Sendable, Equatable {
   let totalTokens: UInt64
   let percentage: Double
   let agents: [ProjectAgentUsage]
-  var id: String { path ?? "other" }
+  var kind: String? = nil
+  // Reports from before `kind` only had repositories and "Other".
+  var category: ProjectKind {
+    kind.flatMap(ProjectKind.init) ?? (path == nil ? .other : .repository)
+  }
+  var id: String { path ?? category.rawValue }
 }
 
 struct ProjectAgentUsage: Codable, Identifiable, Sendable, Equatable {

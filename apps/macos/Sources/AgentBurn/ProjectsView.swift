@@ -16,20 +16,23 @@ struct ProjectsModel {
 
   init(projects all: [ProjectUsage], query: String = "") {
     let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    // "Other" has no directory: keep it last whatever it costs.
+    // Scratch and Other are buckets, not projects: keep them last whatever they cost.
     projects = all.filter {
       needle.isEmpty || $0.name.localizedCaseInsensitiveContains(needle)
         || ($0.path?.localizedCaseInsensitiveContains(needle) ?? false)
     }
     .sorted {
-      ($0.path == nil ? 1 : 0, -$0.totalCost, $0.name)
-        < ($1.path == nil ? 1 : 0, -$1.totalCost, $1.name)
+      ($0.category.rank, -$0.totalCost, $0.name) < ($1.category.rank, -$1.totalCost, $1.name)
     }
     maxCost = all.map(\.totalCost).max() ?? 0
     let spend = Dictionary(
       all.flatMap(\.agents).map { ($0.agent, $0.totalCost) }, uniquingKeysWith: +)
     agents = spend.filter { $0.value > 0 }
       .sorted { ($0.value, $1.key) > ($1.value, $0.key) }.map(\.key)
+  }
+
+  static func repositories(_ projects: [ProjectUsage]) -> [ProjectUsage] {
+    projects.filter { $0.category == .repository }
   }
 
   func segments(for project: ProjectUsage) -> [ProjectBarSegment] {
@@ -42,6 +45,16 @@ struct ProjectsModel {
   }
 }
 
+extension ProjectKind {
+  fileprivate var rank: Int {
+    switch self {
+    case .repository: 0
+    case .scratch: 1
+    case .other: 2
+    }
+  }
+}
+
 func abbreviatedProjectPath(
   _ path: String, home: String = FileManager.default.homeDirectoryForCurrentUser.path
 ) -> String {
@@ -50,8 +63,23 @@ func abbreviatedProjectPath(
   return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
 }
 
-let otherProjectHelp =
-  "Sessions whose agent did not record a working directory are grouped here."
+extension ProjectKind {
+  fileprivate var symbol: String {
+    switch self {
+    case .repository: "folder.fill"
+    case .scratch: "tray.fill"
+    case .other: "questionmark.folder.fill"
+    }
+  }
+  fileprivate var caption: String {
+    self == .scratch ? "Outside any repository" : "No working directory"
+  }
+  fileprivate var help: String {
+    self == .scratch
+      ? "Sessions that never touched a Git repository, such as quick questions in your home folder or a folder that holds several projects."
+      : "Sessions whose agent did not record a working directory are grouped here."
+  }
+}
 
 struct ProjectsView: View {
   @Environment(UsageStore.self) private var store
@@ -63,7 +91,7 @@ struct ProjectsView: View {
         IconBadge(symbol: "folder.fill", size: 42)
         VStack(alignment: .leading, spacing: 3) {
           Text("Projects").font(.system(size: 24, weight: .bold, design: .rounded))
-          Text("\(store.period.label) · spend by working directory across every harness")
+          Text("\(store.period.label) · spend by repository across every harness")
             .font(.system(size: 12)).foregroundStyle(.secondary)
         }
       }
@@ -72,14 +100,14 @@ struct ProjectsView: View {
       }
       PeriodBar()
       if let projects = store.summary?.projects {
-        list(ProjectsModel(projects: projects, query: search), total: projects.count)
+        list(ProjectsModel(projects: projects, query: search), all: projects)
       } else {
         ContentUnavailableView {
           Label(
             store.isLoading ? "Loading projects" : "Projects are not loaded yet",
             systemImage: "folder")
         } description: {
-          Text("Refresh to load spend for each project folder.")
+          Text("Refresh to load spend for each repository.")
         } actions: {
           Button("Refresh") { Task { await store.refresh() } }.disabled(store.isLoading)
         }
@@ -88,11 +116,14 @@ struct ProjectsView: View {
     }
   }
 
-  private func list(_ model: ProjectsModel, total: Int) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+  private func list(_ model: ProjectsModel, all: [ProjectUsage]) -> some View {
+    let count = ProjectsModel.repositories(all).count
+    let repositories = ProjectsModel.repositories(model.projects)
+    let buckets = model.projects.filter { $0.category != .repository }
+    return VStack(alignment: .leading, spacing: 12) {
       CardHeader(title: "All projects", symbol: "folder.fill") {
         HStack(spacing: 10) {
-          Text(total == 1 ? "1 project" : "\(total) projects")
+          Text(count == 1 ? "1 project" : "\(count) projects")
           HStack(spacing: 5) {
             Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
             TextField("Filter projects", text: $search).textFieldStyle(.plain)
@@ -106,7 +137,8 @@ struct ProjectsView: View {
       if model.agents.count > 1 { ProjectLegend(agents: model.agents) }
       if model.projects.isEmpty {
         Label(
-          total == 0 ? "No project usage recorded in this period." : "No projects match “\(search)”.",
+          all.isEmpty
+            ? "No project usage recorded in this period." : "No projects match “\(search)”.",
           systemImage: "folder"
         )
         .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -114,7 +146,13 @@ struct ProjectsView: View {
       } else {
         VStack(spacing: 2) {
           ProjectColumns()
-          ForEach(model.projects) { project in
+          ForEach(repositories) { project in
+            ProjectRow(project: project, segments: model.segments(for: project))
+          }
+          if !repositories.isEmpty && !buckets.isEmpty {
+            Divider().padding(.horizontal, 8).padding(.vertical, 4)
+          }
+          ForEach(buckets) { project in
             ProjectRow(project: project, segments: model.segments(for: project))
           }
         }
@@ -125,16 +163,16 @@ struct ProjectsView: View {
   }
 }
 
-/// Top projects for the period, linking to the full Projects page.
+/// Top repositories for the period, linking to the full Projects page.
 struct TopProjectsCard: View {
   @Environment(UsageStore.self) private var store
   let projects: [ProjectUsage]
   var body: some View {
-    let model = ProjectsModel(projects: projects)
+    let model = ProjectsModel(projects: ProjectsModel.repositories(projects))
     VStack(alignment: .leading, spacing: 12) {
       CardHeader(title: "Top projects", symbol: "folder.fill") {
         HStack(spacing: 10) {
-          Text("\(projects.count) active")
+          Text("\(model.projects.count) active")
           Button {
             store.selection = "projects"
           } label: {
@@ -201,21 +239,20 @@ private struct ProjectRow: View {
   let project: ProjectUsage
   let segments: [ProjectBarSegment]
   var compact = false
-  private var isOther: Bool { project.path == nil }
+  private var kind: ProjectKind { project.category }
 
   var body: some View {
     HStack(spacing: 12) {
       IconBadge(
-        symbol: isOther ? "questionmark.folder.fill" : "folder.fill",
-        tint: isOther ? .gray : BurnTheme.flame, size: 26)
+        symbol: kind.symbol, tint: kind == .repository ? BurnTheme.flame : .gray, size: 26)
       VStack(alignment: .leading, spacing: 2) {
         Text(project.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-        Text(project.path.map { abbreviatedProjectPath($0) } ?? "No working directory")
+        Text(project.path.map { abbreviatedProjectPath($0) } ?? kind.caption)
           .font(.system(size: 10)).foregroundStyle(.secondary)
           .lineLimit(1).truncationMode(.middle)
       }
       .frame(width: compact ? 220 : 260, alignment: .leading)
-      .help(project.path ?? otherProjectHelp)
+      .help(project.path ?? kind.help)
       ProjectBar(segments: segments)
         .help(
           segments.map { "\(harnessName($0.agent)) \(currency($0.cost))" }

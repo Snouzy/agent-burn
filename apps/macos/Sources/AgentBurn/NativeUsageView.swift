@@ -83,7 +83,7 @@ struct NativeUsageView: View {
         }
         .fixedSize(horizontal: false, vertical: true)
         if agent == nil, store.hasPeriodDetails, let projects = store.summary?.projects,
-          !projects.isEmpty
+          !ProjectsModel.repositories(projects).isEmpty
         {
           TopProjectsCard(projects: projects)
         }

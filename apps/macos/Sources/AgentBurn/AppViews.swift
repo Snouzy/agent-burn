@@ -168,8 +168,8 @@ struct DashboardView: View {
             }
           }
           .id(store.selection)
-            .transition(.opacity.combined(with: .offset(y: 8)))
-            .padding(24).frame(maxWidth: 1280).frame(maxWidth: .infinity)
+          .transition(.opacity.combined(with: .offset(y: 8)))
+          .padding(24).frame(maxWidth: 1280).frame(maxWidth: .infinity)
         }
         .animation(.smooth(duration: 0.3), value: store.selection)
         Divider()
@@ -226,7 +226,7 @@ private struct DashboardSidebar: View {
       row(id: "projects", title: "Projects") {
         IconBadge(symbol: "folder.fill", size: 20)
       } trailing: {
-        if let count = store.summary?.projects?.count {
+        if let count = store.summary?.projects.map({ ProjectsModel.repositories($0).count }) {
           Text(count.formatted()).font(.system(size: 11)).monospacedDigit()
             .foregroundStyle(.secondary)
         }

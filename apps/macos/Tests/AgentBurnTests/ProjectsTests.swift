@@ -29,7 +29,8 @@ private let projectsJSON = """
   #expect(projects[0].percentage == 41.2)
   #expect(projects[0].agents.map(\.agent) == ["claude", "codex"])
   #expect(projects[1].path == nil)
-  #expect(projects[1].agents == [ProjectAgentUsage(agent: "cursor", totalCost: 0.5, totalTokens: 10)])
+  #expect(
+    projects[1].agents == [ProjectAgentUsage(agent: "cursor", totalCost: 0.5, totalTokens: 10)])
 }
 
 @Test func summaryWithoutProjectsStillDecodes() throws {
@@ -60,7 +61,10 @@ private let projectsJSON = """
   #expect(projects == SummaryQuery.for(period: .mtd, selection: "summary"))
   #expect(!projects.arguments.contains("--agents"))
   #expect(SummaryQuery.for(period: .rtd, selection: "projects").period == .all)
-  #expect(SummaryQuery.for(period: .week, selection: "codex").arguments.suffix(2) == ["--agents", "codex"])
+  #expect(
+    SummaryQuery.for(period: .week, selection: "codex").arguments.suffix(2) == [
+      "--agents", "codex",
+    ])
 }
 
 @Test @MainActor func projectsSelectionHasNoHarness() {
@@ -79,11 +83,13 @@ private let projectsJSON = """
 }
 
 private func project(
-  _ name: String, path: String?, cost: Double, agents: [(String, Double)] = []
+  _ name: String, path: String?, cost: Double, agents: [(String, Double)] = [],
+  kind: String? = nil
 ) -> ProjectUsage {
   ProjectUsage(
     name: name, path: path, totalCost: cost, totalTokens: UInt64(cost * 100), percentage: 0,
-    agents: agents.map { ProjectAgentUsage(agent: $0.0, totalCost: $0.1, totalTokens: 1) })
+    agents: agents.map { ProjectAgentUsage(agent: $0.0, totalCost: $0.1, totalTokens: 1) },
+    kind: kind)
 }
 
 @Test func projectsModelSortsByCostWithOtherLast() {
@@ -127,4 +133,39 @@ private func project(
   #expect(abbreviatedProjectPath("/Users/x", home: "/Users/x") == "~")
   #expect(abbreviatedProjectPath("/Users/xy/app", home: "/Users/x") == "/Users/xy/app")
   #expect(abbreviatedProjectPath("/opt/app", home: "/Users/x/") == "/opt/app")
+}
+
+@Test func projectKindDecodesWithFallbackForOldReports() throws {
+  let projects = try #require(
+    try summary(
+      projects: """
+        [{"name":"app","path":"/a/app","kind":"repository","totalCost":3,"totalTokens":3,"percentage":60,"agents":[]},
+         {"name":"Scratch","path":null,"kind":"scratch","totalCost":1,"totalTokens":1,"percentage":20,"agents":[]},
+         {"name":"Other","path":null,"kind":"other","totalCost":1,"totalTokens":1,"percentage":20,"agents":[]}]
+        """
+    ).projects)
+  #expect(projects.map(\.category) == [.repository, .scratch, .other])
+  #expect(Set(projects.map(\.id)).count == 3)
+  let old = try #require(try summary(projects: projectsJSON).projects)
+  #expect(old.map(\.category) == [.repository, .other])
+  #expect(project("x", path: nil, cost: 1, kind: "future").category == .other)
+}
+
+@Test func projectsModelPutsScratchThenOtherAfterRepositories() {
+  let model = ProjectsModel(projects: [
+    project("Other", path: nil, cost: 50, kind: "other"),
+    project("Scratch", path: nil, cost: 70, kind: "scratch"),
+    project("small", path: "/a/small", cost: 1, kind: "repository"),
+    project("big", path: "/a/big", cost: 9),
+  ])
+  #expect(model.projects.map(\.name) == ["big", "small", "Scratch", "Other"])
+}
+
+@Test func topProjectsListOnlyRepositories() {
+  let repositories = ProjectsModel.repositories([
+    project("Scratch", path: nil, cost: 70, kind: "scratch"),
+    project("Other", path: nil, cost: 50),
+    project("app", path: "/a/app", cost: 2),
+  ])
+  #expect(repositories.map(\.name) == ["app"])
 }
