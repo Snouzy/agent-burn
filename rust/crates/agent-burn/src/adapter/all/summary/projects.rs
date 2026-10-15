@@ -7,9 +7,27 @@ use crate::{
     project_root::{Project, ProjectResolver},
 };
 
-const OTHER_PROJECT_NAME: &str = "Other";
+/// Buckets in output order: repositories, then usage from locations outside
+/// any repository, then usage with no location at all.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Kind {
+    Repository,
+    Scratch,
+    Other,
+}
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Repository => "repository",
+            Kind::Scratch => "scratch",
+            Kind::Other => "other",
+        }
+    }
+}
 
 struct ProjectTotal {
+    kind: Kind,
     name: String,
     path: Option<String>,
     cost: f64,
@@ -23,8 +41,8 @@ struct AgentShare {
     tokens: u64,
 }
 
-/// Cost per project, grouping session working directories by git repository.
-/// Usage without a working directory is reported as a trailing "Other" entry.
+/// Cost per git repository. Usage from locations outside any repository is
+/// grouped as "Scratch", and usage without a location as a trailing "Other".
 pub(super) fn projects_json(rows: &[AllRow]) -> Value {
     projects_json_with(rows, ProjectResolver::new(crate::home::home_dir()))
 }
@@ -48,16 +66,20 @@ fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
     let resolved = resolver.finish();
 
     let mut projects = Vec::<ProjectTotal>::new();
-    let mut indexes = FxHashMap::<Option<&str>, usize>::default();
+    let mut indexes = FxHashMap::<(Kind, Option<&str>), usize>::default();
     for row in &agent_rows {
         if row.project_breakdowns.is_empty() {
             let share = (row.agent, row.total_cost, row.total_tokens);
-            add_share(&mut projects, &mut indexes, None, share);
+            add_share(&mut projects, &mut indexes, (Kind::Other, None), share);
         }
         for project in &row.project_breakdowns {
-            let resolved = resolved.get(project.cwd.as_ref());
+            let bucket = match resolved.get(project.cwd.as_ref()) {
+                Some(Some(project)) => (Kind::Repository, Some(project)),
+                Some(None) => (Kind::Scratch, None),
+                None => (Kind::Other, None),
+            };
             let share = (row.agent, project.cost, project.total_tokens);
-            add_share(&mut projects, &mut indexes, resolved, share);
+            add_share(&mut projects, &mut indexes, bucket, share);
         }
     }
 
@@ -70,9 +92,8 @@ fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
         });
     }
     projects.sort_by(|a, b| {
-        a.path
-            .is_none()
-            .cmp(&b.path.is_none())
+        a.kind
+            .cmp(&b.kind)
             .then_with(|| b.cost.total_cmp(&a.cost))
             .then_with(|| b.tokens.cmp(&a.tokens))
     });
@@ -92,6 +113,7 @@ fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
             .map(|project| json!({
                 "name": project.name,
                 "path": project.path,
+                "kind": project.kind.as_str(),
                 "totalCost": json_float(project.cost),
                 "totalTokens": project.tokens,
                 "percentage": json_float(share(project)),
@@ -111,17 +133,21 @@ fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
 
 fn add_share<'a>(
     projects: &mut Vec<ProjectTotal>,
-    indexes: &mut FxHashMap<Option<&'a str>, usize>,
-    project: Option<&'a Project>,
+    indexes: &mut FxHashMap<(Kind, Option<&'a str>), usize>,
+    (kind, project): (Kind, Option<&'a Project>),
     (agent, cost, tokens): (&'static str, f64, u64),
 ) {
-    let key = project.map(|project| project.path.as_str());
-    let index = *indexes.entry(key).or_insert_with(|| {
+    let path = project.map(|project| project.path.as_str());
+    let index = *indexes.entry((kind, path)).or_insert_with(|| {
+        let name = match (kind, project) {
+            (_, Some(project)) => project.name.clone(),
+            (Kind::Scratch, None) => "Scratch".to_string(),
+            _ => "Other".to_string(),
+        };
         projects.push(ProjectTotal {
-            name: project
-                .map_or(OTHER_PROJECT_NAME, |project| &project.name)
-                .to_string(),
-            path: key.map(str::to_string),
+            kind,
+            name,
+            path: path.map(str::to_string),
             cost: 0.0,
             tokens: 0,
             agents: Vec::new(),
@@ -189,20 +215,45 @@ mod tests {
         projects_json_with(rows, ProjectResolver::new(Some(fixture.path("home"))))
     }
 
+    fn repo(fixture: &Fixture, path: &str) -> String {
+        let _ = fixture.create_dir_all(format!("{path}/.git"));
+        fixture.path(path).to_string_lossy().into_owned()
+    }
+
+    fn summary(projects: &Value) -> Vec<(&str, &str, f64)> {
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|project| {
+                (
+                    project["name"].as_str().unwrap(),
+                    project["kind"].as_str().unwrap(),
+                    project["totalCost"].as_f64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn sorts_projects_by_cost_and_keeps_other_last() {
+    fn sorts_repositories_by_cost_then_scratch_then_other() {
         let fixture = Fixture::new();
-        let app = fixture.path("home/dev/app");
-        let web = fixture.path("home/dev/web");
+        let app = repo(&fixture, "home/dev/perso/app");
+        let web = repo(&fixture, "home/dev/perso/web");
+        let container = fixture
+            .path("home/dev/perso")
+            .to_string_lossy()
+            .into_owned();
         let rows = vec![day(vec![
             agent_row(
                 "claude",
-                60,
-                3.0,
+                70,
+                5.0,
                 vec![
-                    project(&app.to_string_lossy(), 10, 1.0),
+                    project(&web, 10, 0.5),
                     project("", 40, 1.5),
-                    project(&web.to_string_lossy(), 10, 0.5),
+                    project(&container, 10, 2.0),
+                    project(&app, 10, 1.0),
                 ],
             ),
             agent_row("qwen", 5, 0.25, Vec::new()),
@@ -210,20 +261,36 @@ mod tests {
 
         let projects = projects_json_for(&fixture, &rows);
 
-        let names = projects
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|project| {
-                (
-                    project["name"].as_str().unwrap(),
-                    project["totalCost"].as_f64().unwrap(),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec![("app", 1.0), ("web", 0.5), ("Other", 1.75),]);
+        assert_eq!(
+            summary(&projects),
+            vec![
+                ("app", "repository", 1.0),
+                ("web", "repository", 0.5),
+                ("Scratch", "scratch", 2.0),
+                ("Other", "other", 1.75),
+            ]
+        );
+        assert_eq!(projects[0]["path"], json!(app));
         assert_eq!(projects[2]["path"], Value::Null);
-        assert_eq!(projects[0]["path"], json!(app.to_string_lossy()));
+        assert_eq!(projects[3]["path"], Value::Null);
+    }
+
+    #[test]
+    fn counts_home_and_folders_outside_repositories_as_scratch() {
+        let fixture = Fixture::new();
+        let home = fixture.path("home").to_string_lossy().into_owned();
+        let notes = fixture.path("home/notes").to_string_lossy().into_owned();
+        let rows = vec![day(vec![agent_row(
+            "codex",
+            30,
+            3.0,
+            vec![project(&home, 10, 1.0), project(&notes, 20, 2.0)],
+        )])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(summary(&projects), vec![("Scratch", "scratch", 3.0)]);
+        assert_eq!(projects[0]["agents"][0]["totalTokens"], 30);
     }
 
     #[test]
@@ -265,6 +332,7 @@ mod tests {
             json!([{
                 "name": "app",
                 "path": repo.to_string_lossy(),
+                "kind": "repository",
                 "totalCost": 3.75,
                 "totalTokens": 42,
                 "percentage": 100,
@@ -279,12 +347,13 @@ mod tests {
     #[test]
     fn project_costs_add_up_to_the_summary_total() {
         let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
         let rows = vec![day(vec![
             agent_row(
                 "claude",
                 30,
                 0.75,
-                vec![project("/x/app", 10, 0.25), project("", 20, 0.5)],
+                vec![project(&app, 10, 0.25), project("", 20, 0.5)],
             ),
             agent_row("kimi", 8, 0.125, vec![project("/x/web", 8, 0.125)]),
         ])];
@@ -305,29 +374,31 @@ mod tests {
     }
 
     #[test]
-    fn omits_other_when_all_usage_is_attributed() {
+    fn omits_scratch_and_other_when_all_usage_is_in_repositories() {
         let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
         let rows = vec![day(vec![agent_row(
             "claude",
             10,
             1.0,
-            vec![project("/x/app", 10, 1.0)],
+            vec![project(&app, 10, 1.0)],
         )])];
 
         let projects = projects_json_for(&fixture, &rows);
 
-        assert_eq!(projects.as_array().unwrap().len(), 1);
-        assert_eq!(projects[0]["name"], "app");
+        assert_eq!(summary(&projects), vec![("app", "repository", 1.0)]);
     }
 
     #[test]
     fn falls_back_to_token_share_without_cost() {
         let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
+        let web = repo(&fixture, "home/dev/web");
         let rows = vec![day(vec![agent_row(
             "claude",
             40,
             0.0,
-            vec![project("/x/app", 30, 0.0), project("/x/web", 10, 0.0)],
+            vec![project(&app, 30, 0.0), project(&web, 10, 0.0)],
         )])];
 
         let projects = projects_json_for(&fixture, &rows);

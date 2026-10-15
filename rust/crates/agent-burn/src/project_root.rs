@@ -3,6 +3,7 @@
 //! Paths are normalized lexically and checked ancestor by ancestor, so sessions
 //! whose folders were deleted since still land on the repository above them.
 //! Linked worktrees resolve to their main repository through `commondir`.
+//! Locations outside any repository are not projects.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,6 +29,7 @@ pub(crate) struct ProjectResolver {
 struct Root {
     path: PathBuf,
     from_git: bool,
+    is_project: bool,
 }
 
 impl ProjectResolver {
@@ -48,18 +50,21 @@ impl ProjectResolver {
             Some(path) => Root {
                 path,
                 from_git: true,
+                is_project: true,
             },
             None => Root {
                 path,
                 from_git: false,
+                is_project: false,
             },
         };
         self.roots.insert(cwd.to_owned(), root);
     }
 
     /// Maps every added cwd to its project, merging Codex worktrees that no
-    /// longer exist into the repository they were created from.
-    pub(crate) fn finish(mut self) -> FxHashMap<String, Project> {
+    /// longer exist into the repository they were created from. Cwds outside
+    /// any repository map to `None`.
+    pub(crate) fn finish(mut self) -> FxHashMap<String, Option<Project>> {
         let mut git_roots_by_name = BTreeMap::<&OsStr, BTreeSet<&Path>>::new();
         for root in self.roots.values().filter(|root| root.from_git) {
             if let Some(name) = root.path.file_name() {
@@ -99,20 +104,23 @@ impl ProjectResolver {
         for (cwd, path) in merges {
             if let Some(root) = self.roots.get_mut(&cwd) {
                 root.path = path;
+                root.is_project = true;
             }
         }
 
         let names = display_names(
-            self.roots.values().map(|root| root.path.as_path()),
-            self.home.as_deref(),
+            self.roots
+                .values()
+                .filter(|root| root.is_project)
+                .map(|root| root.path.as_path()),
         );
         self.roots
             .iter()
             .map(|(cwd, root)| {
-                let project = Project {
+                let project = root.is_project.then(|| Project {
                     path: root.path.to_string_lossy().into_owned(),
                     name: names[root.path.as_path()].clone(),
-                };
+                });
                 (cwd.clone(), project)
             })
             .collect()
@@ -176,10 +184,7 @@ fn codex_worktree(path: &Path) -> Option<PathBuf> {
     Some(components[..start + 4].iter().collect())
 }
 
-fn display_names<'a>(
-    roots: impl Iterator<Item = &'a Path>,
-    home: Option<&Path>,
-) -> FxHashMap<&'a Path, String> {
+fn display_names<'a>(roots: impl Iterator<Item = &'a Path>) -> FxHashMap<&'a Path, String> {
     let roots = roots.collect::<BTreeSet<_>>();
     let mut basename_counts = FxHashMap::<&OsStr, usize>::default();
     for root in &roots {
@@ -191,7 +196,6 @@ fn display_names<'a>(
         .into_iter()
         .map(|root| {
             let name = match root.file_name() {
-                _ if Some(root) == home => "~".to_string(),
                 Some(name) if basename_counts[name] > 1 => {
                     let parent = root
                         .parent()
@@ -235,7 +239,7 @@ mod tests {
 
     use super::*;
 
-    fn resolve(home: &Path, cwds: &[&Path]) -> Vec<Project> {
+    fn resolve(home: &Path, cwds: &[&Path]) -> Vec<Option<Project>> {
         let mut resolver = ProjectResolver::new(Some(home.to_path_buf()));
         for cwd in cwds {
             resolver.add(&cwd.to_string_lossy());
@@ -246,11 +250,11 @@ mod tests {
             .collect()
     }
 
-    fn project(path: &Path, name: &str) -> Project {
-        Project {
+    fn project(path: &Path, name: &str) -> Option<Project> {
+        Some(Project {
             path: path.to_string_lossy().into_owned(),
             name: name.to_string(),
-        }
+        })
     }
 
     #[test]
@@ -333,18 +337,28 @@ mod tests {
     }
 
     #[test]
-    fn keeps_folder_outside_any_repository() {
+    fn folders_outside_any_repository_are_not_projects() {
         let fixture = Fixture::new();
         let _ = fixture.create_dir_all("home/notes/today");
-        let folder = fixture.path("home/notes/today");
 
-        let projects = resolve(&fixture.path("home"), &[&folder]);
+        let projects = resolve(&fixture.path("home"), &[&fixture.path("home/notes/today")]);
 
-        assert_eq!(projects, vec![project(&folder, "today")]);
+        assert_eq!(projects, vec![None]);
     }
 
     #[test]
-    fn stops_before_home_even_when_home_is_a_repository() {
+    fn folders_containing_repositories_are_not_projects() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("home/dev/perso/app/.git");
+        let _ = fixture.create_dir_all("home/dev/perso/web/.git");
+
+        let projects = resolve(&fixture.path("home"), &[&fixture.path("home/dev/perso")]);
+
+        assert_eq!(projects, vec![None]);
+    }
+
+    #[test]
+    fn home_is_never_a_project_even_when_it_is_a_repository() {
         let fixture = Fixture::new();
         let _ = fixture.create_dir_all("home/.git");
         let _ = fixture.create_dir_all("home/notes");
@@ -352,10 +366,7 @@ mod tests {
 
         let projects = resolve(&home, &[&home.join("notes"), &home]);
 
-        assert_eq!(
-            projects,
-            vec![project(&home.join("notes"), "notes"), project(&home, "~")]
-        );
+        assert_eq!(projects, vec![None, None]);
     }
 
     #[test]
