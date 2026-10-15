@@ -29,7 +29,10 @@ agent-burn harness claude --value
 agent-burn harness codex --value
 agent-burn harness kimi
 agent-burn summary --json
+agent-burn summary --json --jq '.projects[:5]'
 ```
+
+`summary --json` includes `projects`: cost per git repository for Claude Code, Codex, and Kimi Code sessions, with worktrees merged into their repository.
 
 macOS app: menu-bar quota for Codex, Claude, Kimi Code, and Cursor, plus a dashboard across detected harnesses. Build locally with `just macos::run`. Details: [apps/macos](https://github.com/Melvynx/agent-burn/tree/main/apps/macos).
 

@@ -19,6 +19,7 @@ Use `--jq` to filter JSON directly:
 
 ```bash
 agent-burn summary --json --jq '.totals'
+agent-burn summary --json --jq '.projects[:5]'
 agent-burn harness claude --json --jq '.window'
 agent-burn harness codex --json --jq '.spendMix'
 ```
@@ -37,6 +38,45 @@ model fields are unchanged.
 
 The [macOS app](/docs/installation#macos-app) uses these details for its General and
 harness tabs. Add `--value` to include subscription plan information.
+
+### Projects
+
+Summary JSON includes `projects`, the cost of each project in the selected date
+range:
+
+```json
+{
+  "name": "agent-burn",
+  "path": "/Users/me/dev/agent-burn",
+  "totalCost": 42.5,
+  "totalTokens": 61000000,
+  "percentage": 31.2,
+  "agents": [
+    { "agent": "claude", "totalCost": 30.1, "totalTokens": 45000000 },
+    { "agent": "codex", "totalCost": 12.4, "totalTokens": 16000000 }
+  ]
+}
+```
+
+Projects are sorted by cost. `percentage` is the share of total cost, or of
+total tokens when nothing has a cost. Project costs add up to `totals.totalCost`.
+
+Usage is attributed to the folder the agent was working in:
+
+- Claude Code: the `cwd` of each log line, so a session that changes folders is
+  split between them.
+- Codex: the `cwd` of the latest `turn_context`.
+- Kimi Code: the workspace root from `workspaces.json`.
+
+Folders are grouped by git repository. Subfolders, git worktrees, and deleted
+Codex worktrees count toward the repository they belong to, even after the
+folder is gone. A session started outside a repository is listed under that
+folder, such as `~` for the home directory. When two repositories share a
+folder name, `name` includes the parent folder (`work/api`, `perso/api`).
+
+Usage from other agents, and usage without a recorded folder, is grouped in a
+final `Other` entry with a `null` path. It is omitted when empty. The terminal
+summary does not show projects.
 
 ### Cursor account balances
 
