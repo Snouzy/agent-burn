@@ -56,15 +56,13 @@ pub(crate) fn cd_paths(line: &[u8]) -> impl Iterator<Item = &str> {
 /// File paths from `apply_patch` headers (`*** Update File: src/main.rs`).
 /// They may be relative to the call's working directory.
 pub(crate) fn patch_paths(line: &[u8]) -> impl Iterator<Item = &str> {
-    [
-        &b"*** Add File: "[..],
-        b"*** Update File: ",
-        b"*** Delete File: ",
-    ]
-    .into_iter()
-    .flat_map(move |header| {
-        memmem::find_iter(line, header)
-            .filter_map(move |start| path_until(&line[start + header.len()..], b"\\\""))
+    memmem::find_iter(line, b"*** ").filter_map(move |start| {
+        let rest = &line[start + 4..];
+        let rest = [&b"Add"[..], b"Update", b"Delete"]
+            .into_iter()
+            .find_map(|action| rest.strip_prefix(action))?
+            .strip_prefix(b" File: ")?;
+        path_until(rest, b"\\\"")
     })
 }
 
@@ -134,7 +132,7 @@ mod tests {
 
         assert_eq!(
             collect(patch_paths(line)),
-            vec!["src/b.rs", "/repo/a.rs", "/repo/c.rs"]
+            vec!["/repo/a.rs", "src/b.rs", "/repo/c.rs"]
         );
     }
 }

@@ -41,10 +41,17 @@ thread_local! {
 
 /// Root of the git repository that contains an absolute `path`, if any.
 pub(crate) fn repository_of(path: &str) -> Option<Arc<str>> {
-    if !Path::new(path).is_absolute() {
+    let path = Path::new(path);
+    if !path.is_absolute() {
         return None;
     }
-    REPOSITORIES.with(|cache| cache.borrow_mut().root(&normalize(Path::new(path))))
+    REPOSITORIES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match cache.ancestors.get(path) {
+            Some(root) => root.clone(),
+            None => cache.root(&normalize(path)),
+        }
+    })
 }
 
 /// Picks the repository each turn of one session file worked in: the one its

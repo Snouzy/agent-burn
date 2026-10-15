@@ -526,6 +526,144 @@ mod tests {
         .to_string()
     }
 
+    // Codex writes `timestamp`, `type`, then `payload`, with the payload
+    // `type` first; `json!` would sort the keys.
+    fn response_item_line(payload_type: &str, fields: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-05-29T08:00:30.000Z","type":"response_item","payload":{{"type":"{payload_type}",{fields}}}}}"#
+        )
+    }
+
+    fn function_call_line(arguments: serde_json::Value) -> String {
+        let arguments = json!(arguments.to_string());
+        response_item_line(
+            "function_call",
+            &format!(r#""name":"exec_command","arguments":{arguments}"#),
+        )
+    }
+
+    fn apply_patch_line(path: &str) -> String {
+        let input = json!(format!(
+            "*** Begin Patch\n*** Update File: {path}\n@@\n-a\n+b\n*** End Patch"
+        ));
+        response_item_line(
+            "custom_tool_call",
+            &format!(r#""name":"apply_patch","input":{input}"#),
+        )
+    }
+
+    fn project_totals(lines: &[String]) -> Vec<(String, u64)> {
+        let fixture = fs_fixture!({ "sessions/session.jsonl": lines.join("\n") });
+        let shared = SharedArgs {
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        let groups =
+            load_groups_from_directory(&fixture.path("sessions"), &shared, AgentReportKind::Daily)
+                .unwrap();
+        groups["2026-05-29"]
+            .projects
+            .iter()
+            .map(|(cwd, models)| (cwd.to_string(), models["gpt-5"].total_tokens))
+            .collect()
+    }
+
+    struct Workspace {
+        fixture: agent_burn_test_support::Fixture,
+        container: String,
+        app: String,
+        web: String,
+    }
+
+    fn workspace() -> Workspace {
+        let fixture = agent_burn_test_support::Fixture::new();
+        let _ = fixture.create_dir_all("dev/app/.git");
+        let _ = fixture.create_dir_all("dev/web/.git");
+        let path = |path: &str| fixture.path(path).to_string_lossy().into_owned();
+        Workspace {
+            container: path("dev"),
+            app: path("dev/app"),
+            web: path("dev/web"),
+            fixture,
+        }
+    }
+
+    #[test]
+    fn attributes_container_turns_to_the_workdir_repository() {
+        let ws = workspace();
+
+        let totals = project_totals(&[
+            turn_context_line(&ws.container),
+            function_call_line(json!({ "cmd": "cargo test", "workdir": ws.app })),
+            token_count_line("2026-05-29T08:01:00.000Z", 100),
+        ]);
+
+        assert_eq!(totals, vec![(ws.app.clone(), 100)]);
+    }
+
+    #[test]
+    fn leading_and_untouched_turns_follow_the_touched_repositories() {
+        let ws = workspace();
+
+        let totals = project_totals(&[
+            turn_context_line(&ws.container),
+            token_count_line("2026-05-29T08:01:00.000Z", 10),
+            function_call_line(json!({ "cmd": "ls", "workdir": ws.web })),
+            token_count_line("2026-05-29T08:02:00.000Z", 30),
+            token_count_line("2026-05-29T08:03:00.000Z", 70),
+            function_call_line(json!({ "cmd": "ls", "workdir": ws.app })),
+            token_count_line("2026-05-29T08:04:00.000Z", 150),
+        ]);
+
+        assert_eq!(totals, vec![(ws.app.clone(), 80), (ws.web.clone(), 70)]);
+    }
+
+    #[test]
+    fn resolves_relative_patch_paths_against_the_call_workdir() {
+        let ws = workspace();
+        let arguments = json!({
+            "command": ["apply_patch", "*** Begin Patch\n*** Update File: src/a.rs\n*** End Patch"],
+            "workdir": ws.web,
+        });
+
+        let totals = project_totals(&[
+            turn_context_line(&ws.container),
+            function_call_line(arguments),
+            token_count_line("2026-05-29T08:01:00.000Z", 10),
+        ]);
+
+        assert_eq!(totals, vec![(ws.web.clone(), 10)]);
+    }
+
+    #[test]
+    fn resolves_relative_patch_paths_against_the_turn_cwd() {
+        let ws = workspace();
+
+        let totals = project_totals(&[
+            turn_context_line(&ws.app),
+            function_call_line(json!({ "cmd": "ls", "workdir": ws.web })),
+            token_count_line("2026-05-29T08:01:00.000Z", 10),
+            apply_patch_line("src/a.rs"),
+            token_count_line("2026-05-29T08:02:00.000Z", 30),
+        ]);
+
+        assert_eq!(totals, vec![(ws.app.clone(), 20), (ws.web.clone(), 10)]);
+    }
+
+    #[test]
+    fn sessions_without_touched_repositories_keep_the_turn_cwd() {
+        let ws = workspace();
+        let tmp = ws.fixture.path("tmp").to_string_lossy().into_owned();
+
+        let totals = project_totals(&[
+            turn_context_line(&ws.container),
+            apply_patch_line(&format!("{tmp}/notes.md")),
+            token_count_line("2026-05-29T08:01:00.000Z", 10),
+        ]);
+
+        assert_eq!(totals, vec![(ws.container.clone(), 10)]);
+    }
+
     #[test]
     fn attributes_usage_to_the_latest_turn_context_cwd() {
         let fixture = fs_fixture!({
