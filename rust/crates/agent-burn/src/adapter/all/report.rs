@@ -212,6 +212,7 @@ fn all_rows_as_usage_summaries(rows: &[AllRow]) -> Vec<UsageSummary> {
             model_breakdowns: row.model_breakdowns.clone(),
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         })
         .collect()
 }

@@ -563,6 +563,7 @@ fn summary_rows(agent: &'static str, summaries: Vec<UsageSummary>) -> Vec<AllRow
                 metadata_agents: Some(vec![agent]),
                 agent_breakdowns: None,
                 model_breakdowns: summary.model_breakdowns,
+                project_breakdowns: summary.project_breakdowns,
             })
         })
         .collect()
@@ -632,6 +633,7 @@ pub(super) fn codex_group_row(
         metadata_agents: Some(vec!["codex"]),
         agent_breakdowns: None,
         model_breakdowns,
+        project_breakdowns: Vec::new(),
     }
 }
 
@@ -682,6 +684,7 @@ mod tests {
             model_breakdowns: Vec::new(),
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }
     }
 

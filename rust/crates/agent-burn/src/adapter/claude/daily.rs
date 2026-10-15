@@ -504,6 +504,7 @@ impl DailyAccumulator {
             model_breakdowns: self.breakdowns,
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }
     }
 }

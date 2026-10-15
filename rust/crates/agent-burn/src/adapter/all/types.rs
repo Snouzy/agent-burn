@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::{ModelBreakdown, fast::FxHashMap};
+use crate::{ModelBreakdown, ProjectBreakdown, fast::FxHashMap};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct AllRow {
     pub(super) period: String,
     pub(super) agent: &'static str,
@@ -19,6 +19,7 @@ pub(super) struct AllRow {
     pub(super) metadata_agents: Option<Vec<&'static str>>,
     pub(super) agent_breakdowns: Option<Vec<AllRow>>,
     pub(super) model_breakdowns: Vec<ModelBreakdown>,
+    pub(super) project_breakdowns: Vec<ProjectBreakdown>,
 }
 
 pub(super) struct AllLoadResult {
@@ -108,6 +109,7 @@ impl AllAccumulator {
             metadata_agents: Some(self.agents.into_iter().collect()),
             agent_breakdowns: Some(agent_breakdowns),
             model_breakdowns,
+            project_breakdowns: Vec::new(),
         }
     }
 }
@@ -124,6 +126,19 @@ fn merge_agent_breakdown(target: &mut AllRow, source: AllRow) {
     target.models_used = models.into_iter().collect();
     target.model_breakdowns =
         merge_model_breakdowns(target.model_breakdowns.drain(..), source.model_breakdowns);
+    merge_project_breakdowns(&mut target.project_breakdowns, source.project_breakdowns);
+}
+
+fn merge_project_breakdowns(target: &mut Vec<ProjectBreakdown>, source: Vec<ProjectBreakdown>) {
+    for item in source {
+        match target.iter_mut().find(|project| project.cwd == item.cwd) {
+            Some(project) => {
+                project.total_tokens += item.total_tokens;
+                project.cost += item.cost;
+            }
+            None => target.push(item),
+        }
+    }
 }
 
 fn merge_model_breakdowns(

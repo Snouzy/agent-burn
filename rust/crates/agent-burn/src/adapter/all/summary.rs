@@ -1247,6 +1247,7 @@ mod tests {
             metadata_agents: Some(vec![agent]),
             agent_breakdowns: None,
             model_breakdowns: Vec::new(),
+            project_breakdowns: Vec::new(),
         }
     }
 
@@ -1293,6 +1294,7 @@ mod tests {
             metadata_agents: Some(Vec::new()),
             agent_breakdowns: Some(agents),
             model_breakdowns: models,
+            project_breakdowns: Vec::new(),
         }
     }
 
@@ -1466,6 +1468,7 @@ mod tests {
             metadata_agents: Some(vec!["claude"]),
             agent_breakdowns: None,
             model_breakdowns: vec![model_token_breakdown("test-model", 100, 10, 20, 50, 265.0)],
+            project_breakdowns: Vec::new(),
         };
         let rows = vec![day_row(265.0, 180, vec![agent], Vec::new())];
 
@@ -1511,6 +1514,7 @@ mod tests {
                 900_000,
                 0.481,
             )],
+            project_breakdowns: Vec::new(),
         };
         let rows = vec![day_row(0.481, 1_130_000, vec![agent], Vec::new())];
 

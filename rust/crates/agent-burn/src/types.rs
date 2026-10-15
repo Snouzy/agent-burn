@@ -105,6 +105,15 @@ pub(crate) struct ModelBreakdown {
     pub(crate) missing_pricing: bool,
 }
 
+/// Usage attributed to the working directory a session ran in. An empty `cwd`
+/// collects usage the source could not attribute.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectBreakdown {
+    pub(crate) cwd: Arc<str>,
+    pub(crate) total_tokens: u64,
+    pub(crate) cost: f64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedEntry {
     pub(crate) data: UsageEntry,
@@ -204,6 +213,8 @@ pub(crate) struct UsageSummary {
     pub(crate) project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) versions: Option<Vec<String>>,
+    #[serde(skip)]
+    pub(crate) project_breakdowns: Vec<ProjectBreakdown>,
 }
 
 impl UsageSummary {

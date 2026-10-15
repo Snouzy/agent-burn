@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::*;
 use crate::{
-    Align, CodexGroup, CodexModelUsage, ModelBreakdown, PricingMap,
+    Align, CodexGroup, CodexModelUsage, ModelBreakdown, PricingMap, ProjectBreakdown,
     cli::{AgentReportKind, CodexSpeed},
 };
 
@@ -31,6 +31,7 @@ fn test_agent_rows(agent: &'static str) -> AgentRows {
             metadata_agents: Some(vec![agent]),
             agent_breakdowns: None,
             model_breakdowns: Vec::new(),
+            project_breakdowns: Vec::new(),
         }],
         detected: true,
     }
@@ -114,6 +115,7 @@ fn aggregates_daily_agent_rows_by_period() {
                 metadata_agents: Some(vec!["codex"]),
                 agent_breakdowns: None,
                 model_breakdowns: Vec::new(),
+                project_breakdowns: Vec::new(),
             },
             AllRow {
                 period: "2026-01-02".to_string(),
@@ -129,6 +131,7 @@ fn aggregates_daily_agent_rows_by_period() {
                 metadata_agents: Some(vec!["claude"]),
                 agent_breakdowns: None,
                 model_breakdowns: Vec::new(),
+                project_breakdowns: Vec::new(),
             },
         ],
         AgentReportKind::Daily,
@@ -179,6 +182,7 @@ fn merges_same_agent_daily_rows_into_one_monthly_breakdown() {
                     cost: 0.01,
                     ..ModelBreakdown::default()
                 }],
+                project_breakdowns: Vec::new(),
             },
             AllRow {
                 period: "2026-01-15".to_string(),
@@ -202,6 +206,7 @@ fn merges_same_agent_daily_rows_into_one_monthly_breakdown() {
                     cost: 0.05,
                     ..ModelBreakdown::default()
                 }],
+                project_breakdowns: Vec::new(),
             },
             AllRow {
                 period: "2026-01-20".to_string(),
@@ -225,6 +230,7 @@ fn merges_same_agent_daily_rows_into_one_monthly_breakdown() {
                     cost: 0.02,
                     ..ModelBreakdown::default()
                 }],
+                project_breakdowns: Vec::new(),
             },
         ],
         AgentReportKind::Monthly,
@@ -272,6 +278,52 @@ fn merges_same_agent_daily_rows_into_one_monthly_breakdown() {
     assert_eq!(codex.input_tokens, 30);
 }
 
+fn project(cwd: &str, total_tokens: u64, cost: f64) -> ProjectBreakdown {
+    ProjectBreakdown {
+        cwd: cwd.into(),
+        total_tokens,
+        cost,
+    }
+}
+
+#[test]
+fn merges_same_agent_project_breakdowns_by_cwd() {
+    let rows = aggregate_rows(
+        vec![
+            AllRow {
+                period: "2026-01-02".to_string(),
+                agent: "claude",
+                total_tokens: 30,
+                total_cost: 0.3,
+                project_breakdowns: vec![project("/repo/a", 10, 0.1), project("/repo/b", 20, 0.2)],
+                ..AllRow::default()
+            },
+            AllRow {
+                period: "2026-01-15".to_string(),
+                agent: "claude",
+                total_tokens: 45,
+                total_cost: 0.45,
+                project_breakdowns: vec![project("/repo/b", 5, 0.05), project("", 40, 0.4)],
+                ..AllRow::default()
+            },
+        ],
+        AgentReportKind::Monthly,
+    );
+
+    assert!(rows[0].project_breakdowns.is_empty());
+    let claude = &rows[0].agent_breakdowns.as_ref().unwrap()[0];
+    let mut projects = claude.project_breakdowns.clone();
+    projects.sort_by(|a, b| a.cwd.cmp(&b.cwd));
+    assert_eq!(
+        projects,
+        vec![
+            project("", 40, 0.4),
+            project("/repo/a", 10, 0.1),
+            project("/repo/b", 25, 0.25),
+        ]
+    );
+}
+
 #[test]
 fn renders_all_report_json_with_period_and_agent_metadata() {
     let rows = vec![AllRow {
@@ -288,6 +340,7 @@ fn renders_all_report_json_with_period_and_agent_metadata() {
         metadata_agents: Some(vec!["codex"]),
         agent_breakdowns: None,
         model_breakdowns: Vec::new(),
+        project_breakdowns: Vec::new(),
     }];
 
     let report = report_json(&rows, AgentReportKind::Daily);
@@ -410,6 +463,7 @@ fn aggregates_model_breakdowns_across_agents() {
                     cost: 0.03,
                     ..ModelBreakdown::default()
                 }],
+                project_breakdowns: Vec::new(),
             },
             AllRow {
                 period: "2026-01-02".to_string(),
@@ -445,6 +499,7 @@ fn aggregates_model_breakdowns_across_agents() {
                         ..ModelBreakdown::default()
                     },
                 ],
+                project_breakdowns: Vec::new(),
             },
         ],
         AgentReportKind::Daily,
@@ -482,6 +537,7 @@ fn displays_total_tokens_with_cache_tokens_like_typescript_table() {
         metadata_agents: Some(vec!["codex"]),
         agent_breakdowns: None,
         model_breakdowns: Vec::new(),
+        project_breakdowns: Vec::new(),
     };
 
     let cells = all_table_row(&row, false, false, false);
@@ -505,6 +561,7 @@ fn report_title_uses_detected_agents_even_when_filtered_rows_are_sparse() {
         metadata_agents: Some(vec!["codex"]),
         agent_breakdowns: None,
         model_breakdowns: Vec::new(),
+        project_breakdowns: Vec::new(),
     }];
 
     let title = all_report_title(
@@ -547,8 +604,10 @@ fn all_table_rows_match_main_agent_breakdown_display() {
             metadata_agents: Some(vec!["codex"]),
             agent_breakdowns: None,
             model_breakdowns: Vec::new(),
+            project_breakdowns: Vec::new(),
         }]),
         model_breakdowns: Vec::new(),
+        project_breakdowns: Vec::new(),
     };
 
     assert_eq!(
@@ -582,6 +641,7 @@ fn all_report_title_lists_detected_agents() {
         metadata_agents: Some(vec!["claude", "codex"]),
         agent_breakdowns: None,
         model_breakdowns: Vec::new(),
+        project_breakdowns: Vec::new(),
     };
 
     assert_eq!(

@@ -569,6 +569,7 @@ mod tests {
             model_breakdowns: Vec::new(),
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }]);
 
         assert_eq!(totals["totalTokens"], 172);
@@ -774,6 +775,7 @@ mod tests {
             ],
             project: project.map(str::to_string),
             versions: Some(vec!["1.0.0".to_string(), "1.1.0".to_string()]),
+            project_breakdowns: Vec::new(),
         }
     }
 }
