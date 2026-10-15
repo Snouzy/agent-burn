@@ -22,7 +22,8 @@ struct CompactHarnessView: View {
             ?? "Showing the last known reading. Update pending.",
           compact: true,
           availableResets: store.reports[agent]?.resetCreditsAvailable,
-          rates: store.blendRates(for: agent)
+          rates: store.blendRates(for: agent),
+          style: quotaMeterStyle(for: agent, forecast: forecast)
         )
         QuotaChart(
           forecast: forecast,
@@ -38,6 +39,14 @@ struct CompactHarnessView: View {
               "\(short.label) limit",
               "\(max(0, 100 - short.usedPercent).formatted(.number.precision(.fractionLength(0))))% remaining"
             )
+          }
+          // Claude's 5-hour meter comes from its subscription's short window above.
+          if agent == "kimi", let session = store.forecast(for: kimiSessionQuotaAgent),
+            session.reset > store.quotaCheckDate
+          {
+            detail(
+              "5-hour limit",
+              "\(session.remaining.formatted(.number.precision(.fractionLength(0))))% remaining")
           }
         }
         .burnCard(padding: 14, radius: 12)

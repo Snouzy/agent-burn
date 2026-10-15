@@ -15,7 +15,9 @@ enum NotchModel {
   static let cardGap: CGFloat = 12
   static let maxModels = 3
 
-  private static let order = ["codex", "claude", "cursor"]
+  private static let order = ["codex", "claude", "kimi", "cursor"]
+  /// Agents whose ring also shows the 5-hour session window as an inner ring.
+  static let doubleRingAgents: Set = ["kimi"]
 
   static func agents(known: [String], hasForecast: (String) -> Bool) -> [String] {
     known.filter(hasForecast).sorted { a, b in
@@ -121,6 +123,11 @@ struct NotchMetrics: Equatable, Sendable {
   var percentLine: CGFloat { NotchModel.percentLine * scale }
   var labelSize: CGFloat { 14 * scale }
   var iconSize: CGFloat { 17 * scale }
+  var ringTrackWidth: CGFloat { 5.8 * scale }
+  // The inner session ring sits inside the outer track with a hairline gap.
+  var innerRingDiameter: CGFloat { ringDiameter * 0.7 }
+  var innerRingTrackWidth: CGFloat { 3.6 * scale }
+  var doubleRingIconSize: CGFloat { 14 * scale }
   private var cell: CGFloat { ringDiameter + labelGap + percentLine }
 
   func notchHeight(ringCount: Int) -> CGFloat {

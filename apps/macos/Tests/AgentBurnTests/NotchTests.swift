@@ -1000,3 +1000,101 @@ private final class MemoryReader {
     #expect(abs(size.height - cell) < 1, "\(scale)×: \(size.height) pt tall")
   }
 }
+
+@Test func notchOrderPutsKimiBetweenClaudeAndCursor() {
+  let agents = NotchModel.agents(
+    known: ["cursor", "kimi", "claude", "codex"], hasForecast: { _ in true })
+  #expect(agents == ["codex", "claude", "kimi", "cursor"])
+}
+
+@Test func notchDoubleRingShowsTheMoreConstrainedWindow() {
+  let kimi = NotchRing(
+    agent: "kimi", usedPercent: 40, stale: false, style: .monthly, sessionUsedPercent: 72)
+  #expect(kimi.label == "72%")
+  #expect(kimi.voiceOverLabel == "Kimi Code, monthly 40 percent used, 5-hour 72 percent used")
+  let calm = NotchRing(
+    agent: "kimi", usedPercent: 40, stale: false, style: .weekly, sessionUsedPercent: 5)
+  #expect(calm.label == "40%")
+  #expect(calm.voiceOverLabel == "Kimi Code, weekly 40 percent used, 5-hour 5 percent used")
+  let single = NotchRing(agent: "codex", usedPercent: 36, stale: false, style: .weekly)
+  #expect(single.label == "36%")
+  #expect(single.voiceOverLabel == "Codex, Weekly quota, 36 percent used")
+}
+
+@Test func notchInnerRingClearsTheOuterRingAndTheIcon() {
+  for scale in [NotchMetrics.scales.lowerBound, 1, NotchMetrics.scales.upperBound] {
+    let metrics = NotchMetrics(scale: scale)
+    let outerInnerEdge = (metrics.ringDiameter - metrics.ringTrackWidth) / 2
+    let innerOuterEdge = (metrics.innerRingDiameter + metrics.innerRingTrackWidth) / 2
+    let innerHole = (metrics.innerRingDiameter - metrics.innerRingTrackWidth) / 2
+    #expect(innerOuterEdge < outerInnerEdge, "\(scale)×")
+    // The icon's corners, not just its edges, must stay inside the inner track.
+    #expect(metrics.doubleRingIconSize / 2 * 2.squareRoot() <= innerHole + 1, "\(scale)×")
+  }
+}
+
+@Test @MainActor func notchDoubleRingFitsTheNotchAtEveryScale() throws {
+  let ring = NotchRing(
+    agent: "kimi", usedPercent: 100, stale: false, style: .monthly, sessionUsedPercent: 100)
+  for scale in [NotchMetrics.scales.lowerBound, NotchMetrics.scales.upperBound] {
+    let metrics = NotchMetrics(scale: scale)
+    let cell = metrics.ringDiameter + metrics.labelGap + metrics.percentLine
+    for highlighted in [false, true] {
+      let view = UsageRing(ring: ring, highlighted: highlighted, metrics: metrics)
+      let size = try #require(ImageRenderer(content: view.fixedSize()).nsImage?.size)
+      #expect(size.width <= metrics.notchDepth, "\(scale)×: \(size.width) pt wide")
+      #expect(abs(size.height - cell) < 1, "\(scale)×: \(size.height) pt tall")
+    }
+  }
+}
+
+@Test @MainActor func notchKimiRingAndCardCarryTheFiveHourWindow() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  store.summary = SummaryReport(
+    totals: Totals(totalCost: 0, totalTokens: 0),
+    agents: [agentUsage("claude"), agentUsage("kimi")], models: [], daily: nil,
+    subscription: nil)
+  let source = store.customPath + "|" + store.codexHomes
+  let now = Date.now
+  var history = QuotaHistory()
+  for (agent, minutes, used) in [
+    ("kimi", 43_200.0, 40.0), (kimiSessionQuotaAgent, 300, 72), ("claude", 10_080, 10),
+    (claudeSessionQuotaAgent, 300, 90),
+  ] {
+    history.record(
+      QuotaReading(
+        agent: agent, observedAt: now.timeIntervalSince1970 * 1000,
+        window: QuotaWindow(
+          windowMinutes: minutes, usedPercent: used, elapsedPercent: 50, apiEquivalentSpent: 0)),
+      source: source)
+  }
+  try QuotaHistoryFile(directory: directory).save(history)
+  store.reloadQuotas()
+
+  let rings = NotchModel.rings(store: store, now: now)
+  #expect(rings.map(\.agent) == ["claude", "kimi"])
+  #expect(rings[0].sessionUsedPercent == nil, "Claude keeps its single ring")
+  #expect(rings[1].sessionUsedPercent == 72)
+  #expect(rings[1].style == .monthly)
+  #expect(rings[1].label == "72%")
+
+  let card = try #require(NotchModel.card(store: store, agent: "kimi", now: now))
+  #expect(card.style == .monthly)
+  #expect(card.sessionText?.hasPrefix("5h 72% used") == true)
+  #expect(try #require(NotchModel.card(store: store, agent: "claude", now: now)).sessionText == nil)
+}
+
+@Test @MainActor func notchCardWithAFiveHourLineKeepsItsHeight() throws {
+  let base = codexCardData()
+  let data = NotchCardData(
+    agent: "kimi", title: "Kimi Code", plan: nil, forecast: base.forecast, samples: [],
+    staleText: "Saved reading · 5 minutes ago", spend: base.spend, models: base.models,
+    style: .monthly, range: .rte, sessionText: "5h 72% used · resets 3:40 PM")
+  let rows = NotchCardRows(data: data)
+  let limit = try renderedHeight(rows.limit)
+  #expect(abs(limit - NotchModel.limitHeight) < 1, "limit \(limit)")
+}

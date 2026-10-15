@@ -32,8 +32,21 @@ private struct CollectedHarnessQuota: Codable, Sendable {
   var sessionWindow: QuotaWindow? = nil
 }
 
-/// Claude's 5-hour session meter is stored as its own series beside the weekly one.
+/// Claude's and Kimi's 5-hour session meters are stored as their own series beside the
+/// main one. These names key persisted history, so they must never change.
+/// Agents with a `harness` subscription view and a live quota collected by `harness <agent>`.
+let harnessAgents = ["codex", "claude", "kimi"]
+
 let claudeSessionQuotaAgent = "claude-session"
+let kimiSessionQuotaAgent = "kimi-session"
+
+func sessionQuotaAgent(for agent: String) -> String? {
+  switch agent {
+  case "claude": claudeSessionQuotaAgent
+  case "kimi": kimiSessionQuotaAgent
+  default: nil
+  }
+}
 
 enum QuotaCollector {
   /// launchd owns scheduling; this process performs one bounded collection and exits.
@@ -52,7 +65,7 @@ enum QuotaCollector {
     let file = QuotaHistoryFile(directory: directory)
     var history = try file.load() ?? QuotaHistory()
     await withTaskGroup(of: (String, [QuotaReading], String?).self) { group in
-      for agent in ["codex", "claude"] {
+      for agent in harnessAgents {
         group.addTask {
           do {
             let executable = try CLIClient.executable(customPath: config.customPath)
@@ -67,11 +80,12 @@ enum QuotaCollector {
               abs(reading.date.timeIntervalSinceNow) <= 90
             else { throw CLIError.invalidOutput }
             var readings = [reading]
-            if agent == "claude", let session = collected.sessionWindow, session.isValid {
+            if let sessionAgent = sessionQuotaAgent(for: agent),
+              let session = collected.sessionWindow, session.isValid
+            {
               readings.append(
                 QuotaReading(
-                  agent: claudeSessionQuotaAgent, observedAt: collected.observedAt,
-                  window: session))
+                  agent: sessionAgent, observedAt: collected.observedAt, window: session))
             }
             return (agent, readings, nil)
           } catch {

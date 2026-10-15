@@ -27,7 +27,7 @@ struct MenuPopover: View {
         Group {
           if tab == "summary" {
             OverviewView()
-          } else if ["codex", "claude"].contains(tab) {
+          } else if harnessAgents.contains(tab) {
             HarnessView(agent: tab, compact: true)
           } else {
             SourceUsageView(agent: tab, compact: true)
@@ -38,11 +38,11 @@ struct MenuPopover: View {
         .padding(.horizontal, 14).padding(.bottom, 16)
       }
       .scrollIndicators(.never)
-      .frame(height: ["codex", "claude"].contains(tab) ? 460 : 520)
+      .frame(height: harnessAgents.contains(tab) ? 460 : 520)
       .animation(.smooth(duration: 0.25), value: tab)
       Rectangle().fill(BurnTheme.line).frame(height: 1)
       VStack(spacing: 10) {
-        RefreshFooter(source: ["codex", "claude"].contains(tab) ? tab : "summary", compact: true)
+        RefreshFooter(source: harnessAgents.contains(tab) ? tab : "summary", compact: true)
         HStack(spacing: 8) {
           Button {
             store.selection = tab
@@ -78,7 +78,8 @@ private struct PopoverTabs: View {
   @Binding var selection: String
   @Namespace private var pill
   private let tabs: [(id: String, label: String)] = [
-    ("summary", "General"), ("codex", "Codex"), ("claude", "Claude"), ("cursor", "Cursor"),
+    ("summary", "General"), ("codex", "Codex"), ("claude", "Claude"), ("kimi", "Kimi"),
+    ("cursor", "Cursor"),
   ]
   var body: some View {
     HStack(spacing: 2) {
@@ -193,7 +194,7 @@ struct DashboardView: View {
 
 private struct DashboardSidebar: View {
   @Environment(UsageStore.self) private var store
-  private let subscriptions = ["codex", "claude", "cursor"]
+  private let subscriptions = ["codex", "claude", "kimi", "cursor"]
   private var others: [String] {
     store.knownAgents.filter { !subscriptions.contains($0) }
   }
@@ -257,7 +258,7 @@ private struct DashboardSidebar: View {
       let remaining = remainingQuota(
         for: source, forecast: store.forecast(for: agent),
         cursorAccount: store.summary?.cursorAccount,
-        claudeAccount: store.summary?.claudeAccount)
+        claudeAccount: store.summary?.claudeAccount, kimiAccount: store.summary?.kimiAccount)
     {
       let tone = BurnTheme.remainingTone(remaining)
       Text(menuBarQuotaText(remaining))
@@ -285,7 +286,8 @@ struct QuotaSourceMenu: View {
             if let remaining = remainingQuota(
               for: source, forecast: store.forecast(for: source.rawValue),
               cursorAccount: store.summary?.cursorAccount,
-              claudeAccount: store.summary?.claudeAccount)
+              claudeAccount: store.summary?.claudeAccount,
+              kimiAccount: store.summary?.kimiAccount)
             {
               Text(menuBarQuotaText(remaining))
             }
@@ -321,7 +323,7 @@ struct QuotaSourceSettings: View {
         }
       }
       Text(
-        "The flame in the menu bar and the window toolbar show this remaining percentage. Codex uses the live weekly account meter, Claude uses its weekly limit, and Cursor uses promotional credits while those remain, otherwise the included allowance."
+        "The flame in the menu bar and the window toolbar show this remaining percentage. Codex uses the live weekly account meter, Claude uses its weekly limit, Kimi Code uses its monthly limit (weekly on legacy plans), and Cursor uses promotional credits while those remain, otherwise the included allowance."
       )
       .font(.caption).foregroundStyle(.secondary)
     }

@@ -453,6 +453,8 @@ struct SourceUsageView: View {
           CursorAccountView(account: store.summary?.cursorAccount, plan: subscription)
         } else if agent == "claude" {
           ClaudeAccountView(account: store.summary?.claudeAccount, plan: subscription)
+        } else if agent == "kimi" {
+          KimiAccountView(account: store.summary?.kimiAccount, plan: subscription)
         }
         PeriodBar().controlSize(.small)
         HStack(spacing: 10) {

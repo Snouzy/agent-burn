@@ -8,6 +8,7 @@ struct SummaryReport: Codable, Sendable {
   let subscription: SubscriptionReport?
   var cursorAccount: CursorAccount? = nil
   var claudeAccount: ClaudeAccount? = nil
+  var kimiAccount: KimiAccount? = nil
 }
 
 struct Totals: Codable, Sendable {
@@ -289,34 +290,45 @@ func spendBucketTooltip(
 }
 
 enum QuotaMeterStyle {
-  case weekly, promotionalCredits
+  case weekly, monthly, promotionalCredits
   var title: String {
     switch self {
     case .weekly: "Weekly quota"
+    case .monthly: "Monthly quota"
     case .promotionalCredits: "Promotional credits"
+    }
+  }
+  /// The window's name inside a sentence, such as a VoiceOver label.
+  var windowName: String {
+    switch self {
+    case .weekly: "weekly"
+    case .monthly: "monthly"
+    case .promotionalCredits: "promotional credits"
     }
   }
   var remainingCaption: String {
     switch self {
     case .weekly: "Weekly remaining"
+    case .monthly: "Monthly remaining"
     case .promotionalCredits: "Credits remaining"
     }
   }
   var resetTitle: String {
     switch self {
-    case .weekly: "Reset in"
+    case .weekly, .monthly: "Reset in"
     case .promotionalCredits: "Expires in"
     }
   }
   var resetDateTitle: String {
     switch self {
-    case .weekly: "Resets"
+    case .weekly, .monthly: "Resets"
     case .promotionalCredits: "Expires"
     }
   }
   var resetHelp: String {
     switch self {
     case .weekly: "Time left in this weekly limit window."
+    case .monthly: "Time left in this monthly limit window."
     case .promotionalCredits: "Time left before promotional credits expire."
     }
   }
@@ -324,16 +336,26 @@ enum QuotaMeterStyle {
     switch self {
     case .weekly:
       "The current weekly limit started at this time. Used percent is measured against that full limit."
+    case .monthly:
+      "The current monthly limit started at this time. Used percent is measured against that full limit."
     case .promotionalCredits:
       "Used percent is measured against the promotional credit grant. The window runs until those credits expire."
     }
   }
   var chartResetLabel: String {
     switch self {
-    case .weekly: "Reset"
+    case .weekly, .monthly: "Reset"
     case .promotionalCredits: "Expires"
     }
   }
+}
+
+/// Kimi Code reports a monthly window, or a weekly one on legacy plans. Cursor has a
+/// forecast only while promotional credits burn: see cursorQuotaReading.
+func quotaMeterStyle(for agent: String, forecast: Forecast?) -> QuotaMeterStyle {
+  if agent == "cursor" { return .promotionalCredits }
+  guard let forecast, forecast.window.windowMinutes > 2 * 10080 else { return .weekly }
+  return .monthly
 }
 
 struct HarnessModel: Codable, Identifiable, Sendable {
@@ -852,12 +874,13 @@ func resetSummary(_ resets: [QuotaReset]) -> String {
 }
 
 enum QuotaSource: String, CaseIterable, Identifiable {
-  case codex, claude, cursor
+  case codex, claude, kimi, cursor
   var id: String { rawValue }
   var label: String {
     switch self {
     case .codex: "Codex"
     case .claude: "Claude"
+    case .kimi: "Kimi Code"
     case .cursor: "Cursor"
     }
   }
@@ -865,7 +888,7 @@ enum QuotaSource: String, CaseIterable, Identifiable {
 
 func remainingQuota(
   for source: QuotaSource, forecast: Forecast?, cursorAccount: CursorAccount?,
-  claudeAccount: ClaudeAccount? = nil
+  claudeAccount: ClaudeAccount? = nil, kimiAccount: KimiAccount? = nil
 ) -> Double? {
   switch source {
   case .codex:
@@ -873,6 +896,8 @@ func remainingQuota(
   case .claude:
     return forecast?.remaining
       ?? claudeAccount?.weeklyUsedPercent.map { max(0, min(100, 100 - $0)) }
+  case .kimi:
+    return forecast?.remaining ?? kimiAccount?.mainUsedPercent.map { max(0, min(100, 100 - $0)) }
   case .cursor:
     if let forecast { return forecast.remaining }
     return (cursorAccount?.activePercentUsed ?? cursorAccount?.includedPercentUsed)
@@ -911,17 +936,41 @@ func cursorMeterForecast(account: CursorAccount?, now: Date, stored: Forecast?) 
 }
 
 func claudeSessionReading(_ account: ClaudeAccount, now: Date = .now) -> QuotaReading? {
-  guard let used = account.sessionUsedPercent, used.isFinite, (0...100).contains(used),
-    let resetMs = account.sessionResetsAtMs
-  else { return nil }
-  let duration: TimeInterval = 5 * 3600
+  accountQuotaReading(
+    agent: claudeSessionQuotaAgent, used: account.sessionUsedPercent,
+    resetMs: account.sessionResetsAtMs, duration: 5 * 3600, now: now)
+}
+
+func kimiSessionReading(_ account: KimiAccount, now: Date = .now) -> QuotaReading? {
+  accountQuotaReading(
+    agent: kimiSessionQuotaAgent, used: account.sessionUsedPercent,
+    resetMs: account.sessionResetsAtMs, duration: 5 * 3600, now: now)
+}
+
+/// Readings derived from the summary's live account meters, beside the collector's own.
+/// Like Claude, Kimi's main series comes from the collector alone: only its session is added.
+func accountQuotaReadings(_ report: SummaryReport, now: Date = .now) -> [QuotaReading] {
+  [
+    report.cursorAccount.flatMap { cursorQuotaReading($0, now: now) },
+    report.claudeAccount.flatMap { claudeSessionReading($0, now: now) },
+    report.kimiAccount.flatMap { kimiSessionReading($0, now: now) },
+  ].compactMap { $0 }
+}
+
+private func accountQuotaReading(
+  agent: String, used: Double?, resetMs: Double?, duration: TimeInterval, now: Date
+) -> QuotaReading? {
+  guard let used, used.isFinite, (0...100).contains(used), let resetMs, duration > 0 else {
+    return nil
+  }
   let reset = Date(timeIntervalSince1970: resetMs / 1000)
   let elapsed = (duration - reset.timeIntervalSince(now)) / duration * 100
   guard reset > now, (0...100).contains(elapsed) else { return nil }
   return QuotaReading(
-    agent: claudeSessionQuotaAgent, observedAt: now.timeIntervalSince1970 * 1000,
+    agent: agent, observedAt: now.timeIntervalSince1970 * 1000,
     window: QuotaWindow(
-      windowMinutes: 300, usedPercent: used, elapsedPercent: elapsed, apiEquivalentSpent: 0))
+      windowMinutes: duration / 60, usedPercent: used, elapsedPercent: elapsed,
+      apiEquivalentSpent: 0))
 }
 
 func cursorQuotaReading(_ account: CursorAccount, now: Date = .now) -> QuotaReading? {
@@ -979,6 +1028,7 @@ func harnessName(_ key: String) -> String {
   switch key {
   case "codex": "Codex"
   case "claude": "Claude Code"
+  case "kimi": "Kimi Code"
   case "opencode": "OpenCode"
   case "pi": "Pi"
   default: key.capitalized

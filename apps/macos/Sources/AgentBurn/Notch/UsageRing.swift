@@ -6,10 +6,19 @@ struct NotchRing: Equatable, Identifiable, Sendable {
   let usedPercent: Double
   let stale: Bool
   let style: QuotaMeterStyle
+  /// The 5-hour session window, drawn as an inner ring when present.
+  var sessionUsedPercent: Double? = nil
   var id: String { agent }
+  /// Whichever window runs out first is the one worth reading at a glance.
+  var label: String { "\(percent(max(usedPercent, sessionUsedPercent ?? usedPercent)))%" }
   var voiceOverLabel: String {
-    "\(harnessName(agent)), \(style.title), \(Int(usedPercent.rounded())) percent used"
+    guard let sessionUsedPercent else {
+      return "\(harnessName(agent)), \(style.title), \(percent(usedPercent)) percent used"
+    }
+    return "\(harnessName(agent)), \(style.windowName) \(percent(usedPercent)) percent used, "
+      + "5-hour \(percent(sessionUsedPercent)) percent used"
   }
+  private func percent(_ value: Double) -> Int { Int(value.rounded()) }
   func opacity(highlighted: Bool) -> Double { stale && !highlighted ? 0.45 : 1 }
 }
 
@@ -20,13 +29,14 @@ struct UsageRing: View {
   var body: some View {
     RingCell(
       progress: ring.usedPercent / 100, color: BurnTheme.color(for: ring.agent),
-      label: "\(Int(ring.usedPercent.rounded()))%", highlighted: highlighted,
+      label: ring.label, highlighted: highlighted,
       opacity: ring.opacity(highlighted: highlighted), voiceOverLabel: ring.voiceOverLabel,
-      metrics: metrics
+      metrics: metrics, innerProgress: ring.sessionUsedPercent.map { $0 / 100 }
     ) {
       if let image = BrandImages.images[ring.agent] {
+        let size = ring.sessionUsedPercent == nil ? metrics.iconSize : metrics.doubleRingIconSize
         Image(nsImage: image).resizable().interpolation(.high)
-          .frame(width: metrics.iconSize, height: metrics.iconSize)
+          .frame(width: size, height: size)
       }
     }
   }
@@ -76,6 +86,7 @@ private struct RingCell<Center: View>: View {
   let opacity: Double
   let voiceOverLabel: String
   let metrics: NotchMetrics
+  var innerProgress: Double? = nil
   @ViewBuilder let center: Center
 
   var body: some View {
@@ -83,11 +94,25 @@ private struct RingCell<Center: View>: View {
     VStack(spacing: metrics.labelGap) {
       ZStack {
         Circle().stroke(color.opacity(highlighted ? 0.35 : 0), lineWidth: 12 * scale)
-        Circle().stroke(Color.white.opacity(highlighted ? 0.26 : 0.18), lineWidth: 5.8 * scale)
+        Circle().stroke(
+          Color.white.opacity(highlighted ? 0.26 : 0.18), lineWidth: metrics.ringTrackWidth)
         Circle()
           .trim(from: 0, to: min(max(progress, 0), 1))
           .stroke(color, style: StrokeStyle(lineWidth: 3 * scale, lineCap: .round))
           .rotationEffect(.degrees(-90))
+        if let innerProgress {
+          ZStack {
+            Circle().stroke(
+              Color.white.opacity(highlighted ? 0.2 : 0.12), lineWidth: metrics.innerRingTrackWidth)
+            Circle()
+              .trim(from: 0, to: min(max(innerProgress, 0), 1))
+              .stroke(
+                color.opacity(0.75), style: StrokeStyle(lineWidth: 2 * scale, lineCap: .round)
+              )
+              .rotationEffect(.degrees(-90))
+          }
+          .frame(width: metrics.innerRingDiameter, height: metrics.innerRingDiameter)
+        }
         center
       }
       .frame(width: metrics.ringDiameter, height: metrics.ringDiameter)

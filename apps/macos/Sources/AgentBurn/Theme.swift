@@ -39,11 +39,17 @@ enum BurnTheme {
   private static let quotaClaude = adaptiveQuotaColor(
     light: NSColor(red: 0.55, green: 0.26, blue: 0.02, alpha: 1), dark: .systemOrange)
 
+  private static let quotaKimi = adaptiveQuotaColor(
+    light: NSColor(red: 0, green: 0.4, blue: 0.5, alpha: 1), dark: .systemCyan)
+
   static func quotaColor(for agent: String) -> Color {
-    agent == "claude"
-      ? quotaClaude
-      : adaptiveQuotaColor(
+    switch agent {
+    case "claude": quotaClaude
+    case "kimi": quotaKimi
+    default:
+      adaptiveQuotaColor(
         light: NSColor(red: 0.04, green: 0.43, blue: 0.18, alpha: 1), dark: .systemGreen)
+    }
   }
 
   private static func adaptiveQuotaColor(light: NSColor, dark: NSColor) -> Color {
