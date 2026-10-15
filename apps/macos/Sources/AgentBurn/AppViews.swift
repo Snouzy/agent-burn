@@ -25,7 +25,7 @@ struct MenuPopover: View {
         .padding(.horizontal, 14).padding(.bottom, 14)
       ScrollView {
         Group {
-          if SummaryQuery.harness(for: tab) == nil {
+          if store.selectedHarness == nil {
             OverviewView()
           } else if harnessAgents.contains(tab) {
             HarnessView(agent: tab, compact: true)

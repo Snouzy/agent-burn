@@ -125,6 +125,40 @@ struct ProjectsView: View {
   }
 }
 
+/// Top projects for the period, linking to the full Projects page.
+struct TopProjectsCard: View {
+  @Environment(UsageStore.self) private var store
+  let projects: [ProjectUsage]
+  var body: some View {
+    let model = ProjectsModel(projects: projects)
+    VStack(alignment: .leading, spacing: 12) {
+      CardHeader(title: "Top projects", symbol: "folder.fill") {
+        HStack(spacing: 10) {
+          Text("\(projects.count) active")
+          Button {
+            store.selection = "projects"
+          } label: {
+            HStack(spacing: 3) {
+              Text("See all")
+              Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(BurnTheme.flameLabel)
+          }
+          .buttonStyle(.plain)
+          .help("Open Projects")
+        }
+      }
+      VStack(spacing: 2) {
+        ForEach(model.projects.prefix(5)) { project in
+          ProjectRow(project: project, segments: model.segments(for: project), compact: true)
+        }
+      }
+      .padding(.horizontal, -8)
+    }
+    .burnCard()
+  }
+}
+
 private struct ProjectLegend: View {
   let agents: [String]
   var body: some View {
