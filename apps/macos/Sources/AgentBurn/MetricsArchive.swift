@@ -78,6 +78,7 @@ struct MetricsArchive: Codable {
     report.cursorAccount = live?.cursorAccount
     report.claudeAccount = live?.claudeAccount
     report.kimiAccount = live?.kimiAccount
+    report.projects = live?.projects
     return report
   }
 }

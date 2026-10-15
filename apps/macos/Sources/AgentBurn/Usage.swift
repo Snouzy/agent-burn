@@ -9,6 +9,7 @@ struct SummaryReport: Codable, Sendable {
   var cursorAccount: CursorAccount? = nil
   var claudeAccount: ClaudeAccount? = nil
   var kimiAccount: KimiAccount? = nil
+  var projects: [ProjectUsage]? = nil
 }
 
 struct Totals: Codable, Sendable {
@@ -23,6 +24,25 @@ struct AgentUsage: Codable, Identifiable, Sendable {
   let models: [ModelUsage]?
   let daily: [DailyUsage]?
   let tokenBreakdown: [String: UInt64]?
+  var id: String { agent }
+}
+
+/// Spend grouped by working directory. `path` is nil for the "Other" bucket of
+/// sessions that recorded no directory.
+struct ProjectUsage: Codable, Identifiable, Sendable, Equatable {
+  let name: String
+  let path: String?
+  let totalCost: Double
+  let totalTokens: UInt64
+  let percentage: Double
+  let agents: [ProjectAgentUsage]
+  var id: String { path ?? "other" }
+}
+
+struct ProjectAgentUsage: Codable, Identifiable, Sendable, Equatable {
+  let agent: String
+  let totalCost: Double
+  let totalTokens: UInt64
   var id: String { agent }
 }
 
