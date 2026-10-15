@@ -1,0 +1,64 @@
+---
+title: Kimi Code
+description: Kimi Code harness, live quotas, and local log locations.
+icon: Moon
+---
+
+Kimi Code is a `harness` target and part of the all-agent `summary` view. Agent Burn reads both the current Kimi Code CLI and the legacy Python kimi-cli under the single `kimi` agent.
+
+```bash
+agent-burn harness kimi
+agent-burn harness kimi --json --offline
+agent-burn summary --value --agents kimi --json
+```
+
+Kimi exposes no plan name or price to Agent Burn, so the harness shows API-equivalent spend against the live quota window without a value multiple, and there is no `--kimi-plan` flag.
+
+## Data source
+
+| CLI | Default location | Session files |
+| --- | --- | --- |
+| Kimi Code | `${KIMI_CODE_HOME:-~/.kimi-code}` | `sessions/{workDirKey}/{session}/agents/{agentId}/wire.jsonl` |
+| Legacy kimi-cli | `~/.kimi` | `sessions/{group}/{session}/wire.jsonl` |
+
+Overrides:
+
+- `KIMI_DATA_DIR` — comma-separated data roots that replace both defaults. Each root may hold either layout.
+- `KIMI_CODE_HOME` — Kimi Code's own home directory, used when `KIMI_DATA_DIR` is unset
+- `KIMI_CODE_BASE_URL` — base URL for the live quota request
+
+Kimi Code writes one `usage.record` per model request. Agent Burn sums them as input, output, cache read, and cache creation tokens. Sub-agent usage rolls up into its parent session. Forked sessions copy the source wire, so only records after the last `forked` marker count. Sessions imported from kimi-cli carry no copied usage, so the legacy `~/.kimi` tree stays the only source for usage recorded before the import and nothing is counted twice.
+
+Legacy kimi-cli usage comes from `StatusUpdate` token counts. Model aliases resolve through Kimi Code's `config.toml`.
+
+## Cost estimates
+
+Kimi's coding-plan model ids, such as `kimi-for-coding`, are not API model names, and LiteLLM has no price for them. Kimi costs are API-equivalent estimates, not what Kimi charges:
+
+| Model | Priced as |
+| --- | --- |
+| `kimi-for-coding` (legacy kimi-cli) | Kimi K2.5, then Kimi K2.6 from April 20, 2026 |
+| `kimi-for-coding`, `kimi-for-coding-highspeed` (Kimi Code) | Kimi K2.7 Code |
+| `k3` | Kimi K3 |
+| other models | the matching Moonshot API price when LiteLLM has one |
+
+Cache writes are priced at 1.25× input.
+
+## Live quota
+
+`harness kimi` and `summary --value --json` call Kimi's `/usages` endpoint with the access token Kimi Code stores under `$KIMI_CODE_HOME/credentials/`. The base URL is `KIMI_CODE_BASE_URL`, then the managed provider `base_url` in `config.toml`, then `https://api.kimi.com/coding/v1`.
+
+Agent Burn only reads the stored access token and never refreshes it. Refreshing would rotate Kimi Code's refresh token and could sign the CLI out. When the token expires, Agent Burn makes no request and live quotas pause until the Kimi CLI refreshes the token on its next run. `--offline` skips the request. Request failures never fail the report.
+
+Windows reported by Kimi:
+
+- 5-hour session
+- weekly, on legacy plans only
+- monthly Kimi Code quota and the monthly account total
+- booster balance
+
+The harness window is the weekly limit when Kimi reports one, otherwise the monthly Kimi Code quota (or the monthly total). See [JSON output](/docs/json-output#kimi-code-account-meters) for the `kimiAccount` keys.
+
+## macOS app
+
+The [macOS app](/docs/installation#macos-app) adds a Kimi tab with a Kimi Code account card: the 5-hour session, the weekly limit on legacy plans, the monthly Kimi Code quota, and the booster balance. Kimi Code quotas are included in background quota history, with the 5-hour session stored beside the main window. In the notch, Kimi uses a concentric double ring: the outer ring is the weekly or monthly limit, the inner ring is the 5-hour session, and the label shows whichever is more used.

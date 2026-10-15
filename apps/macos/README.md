@@ -3,7 +3,7 @@
 Native SwiftUI dashboard and menu-bar app, backed by the Rust Agent Burn CLI.
 macOS 14 or newer. Public releases contain Apple Silicon and Intel binaries.
 
-The Codex and Claude menu-bar tabs focus on remaining quota, its reset time, and
+The Codex, Claude, and Kimi menu-bar tabs focus on remaining quota, its reset time, and
 a compact usage forecast. Expand **Usage details** for spend, plan pricing, and
 top models. Saved readings and update failures remain visible beside the quota.
 
@@ -16,7 +16,7 @@ sign in. Registration uses macOS Login Items; any required approval is shown in
 Settings. Disable the option to remove the login item. Menu-bar-only mode is
 respected at startup.
 
-Use Settings to configure sources and manage update checks. The menu-bar percentage can show Codex, Claude, or Cursor remaining
+Use Settings to configure sources and manage update checks. The menu-bar percentage can show Codex, Claude, Kimi Code, or Cursor remaining
 quota; change it from the percentage menu or **Settings → Menu bar quota**. Enable **Settings → Appearance → Menu bar only** to hide the app from
 the Dock and Command-Tab. The preference survives restarts; the dashboard and
 Settings remain accessible from the menu-bar icon. Disable it to restore Dock
@@ -48,7 +48,7 @@ rapid changes load the latest selected period. Harness tabs read only their own
 source; General reads all sources. Automatic refresh maintains history and recovery
 files without dashboard controls. If a refresh fails, saved data stays visible.
 
-Codex, Claude, and Cursor promotional-credit quotas are collected every minute by a macOS background agent,
+Codex, Claude, Kimi Code, and Cursor promotional-credit quotas are collected every minute by a macOS background agent,
 even after the app quits. Enable or disable this in **Settings → Background quota
 history**; allow background activity in macOS Settings if requested. The agent
 reads live provider counters independently of full spend reports and cached mode.
@@ -66,7 +66,14 @@ jumps, and show Codex banked rate-limit resets when the live meter
 reports them. **Reset to date** filters spend from the current cycle start.
 The Claude dashboard shows the same live account meters Claude Code reports:
 session remaining, weekly remaining, scoped model weeks, and extra-usage
-credits when Claude returns them. The Codex and Claude dashboard quota card
+credits when Claude returns them. The Kimi dashboard shows a Kimi Code account
+card: the 5-hour session, the weekly limit on legacy plans, the monthly Kimi
+Code quota, and the booster balance. Kimi Code uses its monthly limit (weekly
+on legacy plans) for the menu-bar percentage. Agent Burn reads the access token
+the Kimi CLI stores and never refreshes it, so Kimi quotas pause after the token
+expires until the Kimi CLI refreshes it. In the notch, Kimi uses a concentric
+double ring: the outer ring is the weekly or monthly limit, the inner ring is the
+5-hour session, and the label shows whichever is more used. The Codex and Claude dashboard quota card
 shows when the current weekly limit started and how much of it has been used,
 next to the reset time. Cursor uses that same remaining chart while promotional
 credits are burning, then the daily spend chart with All models and Cursor models

@@ -6,7 +6,7 @@ brand
 
 ## Users and purpose
 
-Developers using Codex, Claude, Cursor and other coding agents. Help them understand subscription limits, token usage and API-equivalent spend through a native macOS app and an open-source CLI.
+Developers using Codex, Claude, Kimi Code, Cursor and other coding agents. Help them understand subscription limits, token usage and API-equivalent spend through a native macOS app and an open-source CLI.
 
 ## Brand
 

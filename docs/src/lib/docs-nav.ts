@@ -35,6 +35,7 @@ export const docsFolders = [
 			{ title: 'Claude Code', href: '/docs/claude' },
 			{ title: 'Codex', href: '/docs/codex' },
 			{ title: 'Cursor', href: '/docs/cursor' },
+			{ title: 'Kimi Code', href: '/docs/kimi' },
 		],
 	},
 	{
@@ -51,7 +52,7 @@ export const docsSearchIndex = [
 	{
 		url: '/docs',
 		title: 'Documentation',
-		description: 'Local subscription-value reports for Claude Code, Codex, and Cursor.',
+		description: 'Local subscription-value reports for Claude Code, Codex, Kimi Code, and Cursor.',
 		folder: '',
 	},
 	{
@@ -94,6 +95,12 @@ export const docsSearchIndex = [
 		url: '/docs/cursor',
 		title: 'Cursor',
 		description: 'Cursor usage in the summary view, including charts and HTML.',
+		folder: 'Data sources',
+	},
+	{
+		url: '/docs/kimi',
+		title: 'Kimi Code',
+		description: 'Kimi Code harness, live quotas, and local log locations.',
 		folder: 'Data sources',
 	},
 	{
