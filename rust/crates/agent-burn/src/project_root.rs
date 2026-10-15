@@ -6,10 +6,12 @@
 //! Locations outside any repository are not projects.
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 use crate::fast::FxHashMap;
@@ -21,9 +23,81 @@ pub(crate) struct Project {
 }
 
 pub(crate) struct ProjectResolver {
-    home: Option<PathBuf>,
-    ancestors: FxHashMap<PathBuf, Option<PathBuf>>,
+    repositories: RepositoryCache,
     roots: FxHashMap<String, Root>,
+}
+
+/// Memoized repository root per directory, so repeated lookups in the same
+/// folders cost a hash lookup instead of filesystem calls.
+struct RepositoryCache {
+    home: Option<PathBuf>,
+    ancestors: FxHashMap<PathBuf, Option<Arc<str>>>,
+}
+
+thread_local! {
+    static REPOSITORIES: RefCell<RepositoryCache> =
+        RefCell::new(RepositoryCache::new(crate::home::home_dir()));
+}
+
+/// Root of the git repository that contains an absolute `path`, if any.
+pub(crate) fn repository_of(path: &str) -> Option<Arc<str>> {
+    if !Path::new(path).is_absolute() {
+        return None;
+    }
+    REPOSITORIES.with(|cache| cache.borrow_mut().root(&normalize(Path::new(path))))
+}
+
+/// Picks the repository each turn of one session file worked in: the one its
+/// tool calls referenced most (ties go to the last one), else the previous
+/// turn's. `first` lets callers attribute turns before the first touch.
+#[derive(Default)]
+pub(crate) struct TurnRepositories {
+    touches: Vec<(Arc<str>, usize, usize)>,
+    references: usize,
+    last: Option<Arc<str>>,
+    first: Option<Arc<str>>,
+}
+
+impl TurnRepositories {
+    pub(crate) fn touch(&mut self, path: &str) {
+        if let Some(repository) = repository_of(path) {
+            self.touch_repository(repository);
+        }
+    }
+
+    fn touch_repository(&mut self, repository: Arc<str>) {
+        self.references += 1;
+        match self
+            .touches
+            .iter_mut()
+            .find(|(touched, _, _)| *touched == repository)
+        {
+            Some((_, count, last)) => {
+                *count += 1;
+                *last = self.references;
+            }
+            None => self.touches.push((repository, 1, self.references)),
+        }
+    }
+
+    /// Ends the current turn. Returns the repository the turn touched itself,
+    /// and the one it is attributed to (its own, else the previous turn's).
+    pub(crate) fn finish_turn(&mut self) -> (Option<Arc<str>>, Option<Arc<str>>) {
+        let own = self
+            .touches
+            .drain(..)
+            .max_by_key(|(_, count, last)| (*count, *last))
+            .map(|(repository, _, _)| repository);
+        if let Some(repository) = &own {
+            self.first.get_or_insert_with(|| Arc::clone(repository));
+            self.last = Some(Arc::clone(repository));
+        }
+        (own, self.last.clone())
+    }
+
+    pub(crate) fn first(&self) -> Option<&Arc<str>> {
+        self.first.as_ref()
+    }
 }
 
 struct Root {
@@ -35,8 +109,7 @@ struct Root {
 impl ProjectResolver {
     pub(crate) fn new(home: Option<PathBuf>) -> Self {
         Self {
-            home,
-            ancestors: FxHashMap::default(),
+            repositories: RepositoryCache::new(home),
             roots: FxHashMap::default(),
         }
     }
@@ -46,9 +119,9 @@ impl ProjectResolver {
             return;
         }
         let path = normalize(Path::new(cwd));
-        let root = match self.git_root(&path) {
+        let root = match self.repositories.root(&path) {
             Some(path) => Root {
-                path,
+                path: PathBuf::from(path.as_ref()),
                 from_git: true,
                 is_project: true,
             },
@@ -125,8 +198,17 @@ impl ProjectResolver {
             })
             .collect()
     }
+}
 
-    fn git_root(&mut self, dir: &Path) -> Option<PathBuf> {
+impl RepositoryCache {
+    fn new(home: Option<PathBuf>) -> Self {
+        Self {
+            home,
+            ancestors: FxHashMap::default(),
+        }
+    }
+
+    fn root(&mut self, dir: &Path) -> Option<Arc<str>> {
         let mut visited = Vec::new();
         let mut found = None;
         for ancestor in dir.ancestors() {
@@ -139,7 +221,7 @@ impl ProjectResolver {
             }
             visited.push(ancestor.to_path_buf());
             if let Some(root) = git_root_at(ancestor) {
-                found = Some(root);
+                found = Some(Arc::from(root.to_string_lossy().as_ref()));
                 break;
             }
         }
@@ -426,5 +508,76 @@ mod tests {
             projects,
             vec![project(&dev, "dev/app"), project(&work, "work/app")]
         );
+    }
+
+    fn repo(fixture: &Fixture, path: &str) -> String {
+        let _ = fixture.create_dir_all(format!("{path}/.git"));
+        fixture.path(path).to_string_lossy().into_owned()
+    }
+
+    fn attributed(turn: (Option<Arc<str>>, Option<Arc<str>>)) -> (Option<String>, Option<String>) {
+        (
+            turn.0.map(|repo| repo.to_string()),
+            turn.1.map(|repo| repo.to_string()),
+        )
+    }
+
+    #[test]
+    fn turn_goes_to_the_most_referenced_repository() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "dev/app");
+        let web = repo(&fixture, "dev/web");
+        let mut turns = TurnRepositories::default();
+
+        turns.touch(&format!("{web}/a.ts"));
+        turns.touch(&format!("{app}/src/a.rs"));
+        turns.touch(&format!("{app}/src/b.rs"));
+
+        assert_eq!(
+            attributed(turns.finish_turn()),
+            (Some(app.clone()), Some(app))
+        );
+    }
+
+    #[test]
+    fn tied_turn_goes_to_the_last_referenced_repository() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "dev/app");
+        let web = repo(&fixture, "dev/web");
+        let mut turns = TurnRepositories::default();
+
+        turns.touch(&format!("{app}/a.rs"));
+        turns.touch(&format!("{web}/a.ts"));
+
+        assert_eq!(
+            attributed(turns.finish_turn()),
+            (Some(web.clone()), Some(web))
+        );
+    }
+
+    #[test]
+    fn turn_without_touches_inherits_the_previous_repository() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "dev/app");
+        let mut turns = TurnRepositories::default();
+
+        assert_eq!(attributed(turns.finish_turn()), (None, None));
+        turns.touch(&format!("{app}/a.rs"));
+        turns.finish_turn();
+
+        assert_eq!(attributed(turns.finish_turn()), (None, Some(app.clone())));
+        assert_eq!(turns.first().map(|repo| repo.to_string()), Some(app));
+    }
+
+    #[test]
+    fn ignores_paths_outside_repositories() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("tmp/scratch");
+        let mut turns = TurnRepositories::default();
+
+        turns.touch(&fixture.path("tmp/scratch/a.txt").to_string_lossy());
+        turns.touch("relative/path.rs");
+
+        assert_eq!(attributed(turns.finish_turn()), (None, None));
     }
 }

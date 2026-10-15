@@ -17,6 +17,8 @@ use crate::{
     cli::{CostMode, SharedArgs},
     fast::{FxHashMap, SmallIndexVec, byte_lines, suffix_string},
     format_date_tz, log_level, missing_pricing_model_for_usage, parse_ts_timestamp, parse_tz,
+    project_root::TurnRepositories,
+    touched_paths,
 };
 
 use super::{
@@ -116,6 +118,8 @@ struct DailyLoadedEntry {
     date: String,
     project: Arc<str>,
     cwd: Option<Arc<str>>,
+    /// Repository the turn's tool calls touched, inherited across the session.
+    repository: Option<Arc<str>>,
     usage: TokenUsageRaw,
     cost: f64,
     model: Option<String>,
@@ -262,9 +266,12 @@ fn read_daily_usage_file(
     };
 
     let usage_marker = memmem::Finder::new(br#""usage":{"#);
+    let tool_use_marker = memmem::Finder::new(br#""tool_use""#);
     // Sessions can change directory, so usage is attributed per line; lines
-    // without a cwd keep the previous one.
+    // without a cwd keep the previous one. The repository a turn's tools
+    // touched takes precedence over the cwd.
     let mut cwd: Option<Arc<str>> = None;
+    let mut turns = TurnRepositories::default();
     for line in byte_lines(&content) {
         if usage_marker.find(line).is_none() {
             continue;
@@ -281,6 +288,10 @@ fn read_daily_usage_file(
         {
             cwd = Some(Arc::from(line_cwd));
         }
+        if tool_use_marker.find(line).is_some() {
+            touch_tool_paths(&mut turns, line);
+        }
+        let (own_repository, repository) = turns.finish_turn();
         let Some(timestamp) = parse_ts_timestamp(&data.timestamp) else {
             continue;
         };
@@ -316,10 +327,21 @@ fn read_daily_usage_file(
                 Some(model.clone())
             }
         });
+        if let Some(own) = &own_repository {
+            // Claude logs one line per content block; earlier blocks of the
+            // same message belong to the repository its tool call touched.
+            for entry in loaded_file.entries.iter_mut().rev() {
+                if entry.message_id.is_none() || entry.message_id != data.message.id {
+                    break;
+                }
+                entry.repository = Some(Arc::clone(own));
+            }
+        }
         loaded_file.entries.push(DailyLoadedEntry {
             date: format_date_tz(timestamp, tz),
             project: Arc::clone(&project),
             cwd: cwd.clone(),
+            repository,
             usage,
             cost,
             model,
@@ -329,7 +351,23 @@ fn read_daily_usage_file(
             is_sidechain: data.is_sidechain,
         });
     }
+    if let Some(first) = turns.first() {
+        for entry in &mut loaded_file.entries {
+            entry.repository.get_or_insert_with(|| Arc::clone(first));
+        }
+    }
     loaded_file
+}
+
+fn touch_tool_paths(turns: &mut TurnRepositories, line: &[u8]) {
+    for key in ["file_path", "path", "notebook_path"] {
+        for path in touched_paths::key_paths(line, key) {
+            turns.touch(path);
+        }
+    }
+    for path in touched_paths::cd_paths(line) {
+        turns.touch(path);
+    }
 }
 
 fn is_valid_daily_usage_entry(data: &DailyUsageEntry<'_>) -> bool {
@@ -477,16 +515,17 @@ impl DailyAccumulator {
         self.counts.add_usage(entry.usage);
         self.cost += entry.cost;
         let tokens = daily_usage_token_total(entry);
+        let location = entry.repository.as_ref().or(entry.cwd.as_ref());
         match self
             .projects
             .iter_mut()
-            .find(|(cwd, _, _)| *cwd == entry.cwd)
+            .find(|(cwd, _, _)| cwd.as_ref() == location)
         {
             Some((_, total_tokens, cost)) => {
                 *total_tokens += tokens;
                 *cost += entry.cost;
             }
-            None => self.projects.push((entry.cwd.clone(), tokens, entry.cost)),
+            None => self.projects.push((location.cloned(), tokens, entry.cost)),
         }
         if let Some(model) = &entry.model {
             let index = if let Some(index) = self.breakdown_indexes.get(model.as_str()) {
@@ -552,7 +591,7 @@ impl DailyAccumulator {
 mod tests {
     use std::sync::Arc;
 
-    use agent_burn_test_support::{EnvVarGuard, fs_fixture};
+    use agent_burn_test_support::{EnvVarGuard, Fixture, fs_fixture};
 
     use super::{DailyLoadedEntry, load_daily_summaries_inner, push_deduped_daily_entry};
     use crate::{
@@ -653,6 +692,142 @@ mod tests {
         let daily = load_daily(fixture.root());
 
         assert_eq!(projects(&daily[0]), vec![project("/dev/other", 30, 0.75)]);
+    }
+
+    fn tool_line(minute: u32, cwd: &str, id: &str, input: u64, tool: Option<String>) -> String {
+        let content = tool.map_or(r#"[{"type":"text","text":"ok"}]"#.to_string(), |input| {
+            format!(r#"[{{"type":"tool_use","id":"t-{id}","name":"Tool","input":{input}}}]"#)
+        });
+        format!(
+            r#"{{"cwd":"{cwd}","timestamp":"2026-03-10T06:{minute:02}:00.000Z","version":"1.2.3","sessionId":"s","message":{{"id":"{id}","model":"claude-sonnet-4-20250514","content":{content},"usage":{{"input_tokens":{input},"output_tokens":0}}}},"requestId":"req-{id}","costUSD":0}}"#
+        )
+    }
+
+    fn edit(path: &str) -> Option<String> {
+        Some(format!(
+            r#"{{"file_path":"{path}/src/main.rs","old_string":"a","new_string":"b"}}"#
+        ))
+    }
+
+    struct Workspace {
+        fixture: Fixture,
+        container: String,
+        app: String,
+        web: String,
+    }
+
+    fn workspace() -> Workspace {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("dev/app/.git");
+        let _ = fixture.create_dir_all("dev/web/.git");
+        let _ = fixture.create_dir_all("tmp");
+        let path = |path: &str| fixture.path(path).to_string_lossy().into_owned();
+        Workspace {
+            container: path("dev"),
+            app: path("dev/app"),
+            web: path("dev/web"),
+            fixture,
+        }
+    }
+
+    fn session_projects(workspace: &Workspace, lines: &[String]) -> Vec<ProjectBreakdown> {
+        let _ = workspace
+            .fixture
+            .write_file("projects/dev/session.jsonl", lines.join("\n"));
+        projects(&load_daily(workspace.fixture.root())[0])
+    }
+
+    #[test]
+    fn attributes_container_sessions_to_the_repository_they_edit() {
+        let ws = workspace();
+
+        let projects =
+            session_projects(&ws, &[tool_line(0, &ws.container, "m1", 10, edit(&ws.app))]);
+
+        assert_eq!(projects, vec![project(&ws.app, 10, 0.0)]);
+    }
+
+    #[test]
+    fn turns_without_tools_inherit_the_last_touched_repository() {
+        let ws = workspace();
+
+        let projects = session_projects(
+            &ws,
+            &[
+                tool_line(0, &ws.container, "m1", 10, edit(&ws.app)),
+                tool_line(1, &ws.container, "m2", 20, None),
+            ],
+        );
+
+        assert_eq!(projects, vec![project(&ws.app, 30, 0.0)]);
+    }
+
+    #[test]
+    fn turns_before_the_first_touch_go_to_the_first_touched_repository() {
+        let ws = workspace();
+        let read = Some(format!(r#"{{"path":"{}/src","pattern":"x"}}"#, ws.web));
+
+        let projects = session_projects(
+            &ws,
+            &[
+                tool_line(0, &ws.container, "m1", 10, None),
+                tool_line(1, &ws.container, "m2", 20, read),
+                tool_line(2, &ws.container, "m3", 40, edit(&ws.app)),
+            ],
+        );
+
+        assert_eq!(
+            projects,
+            vec![project(&ws.app, 40, 0.0), project(&ws.web, 30, 0.0)]
+        );
+    }
+
+    #[test]
+    fn attributes_bash_cd_targets() {
+        let ws = workspace();
+        let bash = Some(format!(r#"{{"command":"cd {} && cargo test"}}"#, ws.web));
+
+        let projects = session_projects(&ws, &[tool_line(0, &ws.container, "m1", 10, bash)]);
+
+        assert_eq!(projects, vec![project(&ws.web, 10, 0.0)]);
+    }
+
+    #[test]
+    fn tool_use_line_attributes_earlier_lines_of_the_same_message() {
+        let ws = workspace();
+
+        let projects = session_projects(
+            &ws,
+            &[
+                tool_line(0, &ws.container, "m1", 10, edit(&ws.app)),
+                tool_line(1, &ws.container, "m2", 20, None),
+                tool_line(1, &ws.container, "m2", 20, edit(&ws.web)),
+            ],
+        );
+
+        assert_eq!(
+            projects,
+            vec![project(&ws.app, 10, 0.0), project(&ws.web, 20, 0.0)]
+        );
+    }
+
+    #[test]
+    fn ignores_touched_paths_outside_repositories() {
+        let ws = workspace();
+        let tmp = ws.fixture.path("tmp").to_string_lossy().into_owned();
+
+        let projects = session_projects(&ws, &[tool_line(0, &ws.app, "m1", 10, edit(&tmp))]);
+
+        assert_eq!(projects, vec![project(&ws.app, 10, 0.0)]);
+    }
+
+    #[test]
+    fn sessions_without_touches_keep_their_cwd() {
+        let ws = workspace();
+
+        let projects = session_projects(&ws, &[tool_line(0, &ws.container, "m1", 10, None)]);
+
+        assert_eq!(projects, vec![project(&ws.container, 10, 0.0)]);
     }
 
     #[test]
@@ -756,6 +931,7 @@ mod tests {
             date: "2026-03-29".to_string(),
             project: Arc::from("project-a"),
             cwd: None,
+            repository: None,
             usage: TokenUsageRaw {
                 input_tokens: 0,
                 output_tokens: fixture.output_tokens,

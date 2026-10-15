@@ -17,6 +17,7 @@ mod progress;
 mod project_names;
 mod project_root;
 mod summary;
+mod touched_paths;
 mod types;
 mod utils;
 
