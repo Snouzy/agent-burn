@@ -19,6 +19,10 @@ import SwiftUI
   private var agentCount = 0
   var ringCount: Int { agentCount + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1) }
   private var cardHeight: CGFloat?
+  private var resizeStart: (scale: Double, mouseX: CGFloat)?
+  var isResizing: Bool { resizeStart != nil }
+  var metrics: NotchMetrics { NotchMetrics(scale: appearance.notchScale) }
+  var magnification: Double? { appearance.magnifiesNotch ? appearance.magnification : nil }
   private var monitors: [Any] = []
   private var screenObserver: (any NSObjectProtocol)?
   private var pendingClose: Task<Void, Never>?
@@ -46,6 +50,7 @@ import SwiftUI
   }
 
   func open(_ agent: String) {
+    guard !isResizing else { return }
     cancelClose()
     openAgent = agent
     updatePassThrough()
@@ -65,6 +70,24 @@ import SwiftUI
 
   func openActivityMonitor() {
     openURL(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+  }
+
+  // Screen x coordinates, so the panel resizing under the pointer never shifts the drag.
+  func beginResize(mouseX: CGFloat) {
+    cancelClose()
+    openAgent = nil
+    resizeStart = (appearance.notchScale, mouseX)
+  }
+
+  func resize(mouseX: CGFloat) {
+    guard let resizeStart else { return }
+    appearance.notchScale = NotchMetrics.dragScale(
+      start: resizeStart.scale, startX: resizeStart.mouseX, mouseX: mouseX)
+  }
+
+  func endResize() {
+    resizeStart = nil
+    updatePassThrough()
   }
 
   func scheduleClose() {
@@ -178,16 +201,17 @@ import SwiftUI
         id: \.displayIdentifier, frame: \.frame)
     else { return }
     panel.setFrame(
-      NotchModel.panelFrame(screen: screen.frame, ringCount: ringCount), display: false)
+      metrics.panelFrame(screen: screen.frame, ringCount: ringCount), display: false)
     updatePassThrough()
   }
 
   private func updatePassThrough() {
     guard let panel else { return }
     let mouse = NSEvent.mouseLocation
-    let rects = NotchModel.interactiveRects(
+    let rects = metrics.interactiveRects(
       panel: panel.frame, ringCount: ringCount, cardHeight: cardHeight)
-    let inside = rects.contains { $0.contains(mouse) }
+    // A drag can outrun the grabber; the panel must keep the mouse until it ends.
+    let inside = isResizing || rects.contains { $0.contains(mouse) }
     if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
     guard openAgent != nil else { return }
     // SwiftUI can miss a hover change when ignoresMouseEvents flips on the same event.
@@ -202,8 +226,6 @@ import SwiftUI
 struct NotchRoot: View {
   let controller: NotchController
   let store: UsageStore
-  @State private var diskHovered = false
-  @State private var memoryHovered = false
 
   var body: some View {
     let now = store.quotaCheckDate
@@ -214,7 +236,7 @@ struct NotchRoot: View {
       if !rings.isEmpty || disk != nil || memory != nil {
         HStack(spacing: NotchModel.cardGap) {
           NotchCardStack(controller: controller, store: store, now: now)
-          notch(rings, disk: disk, memory: memory)
+          NotchColumn(controller: controller, rings: rings, disk: disk, memory: memory)
         }
       }
     }
@@ -229,20 +251,31 @@ struct NotchRoot: View {
       initial: true
     ) { controller.cardHeightChanged($1) }
   }
+}
 
-  private func notch(_ rings: [NotchRing], disk: DiskSpace?, memory: MemoryStats?) -> some View {
-    VStack(spacing: NotchModel.cellSpacing) {
-      ForEach(rings) { ring in
-        UsageRing(ring: ring, highlighted: controller.openAgent == ring.agent)
-          .frame(width: NotchModel.notchDepth)
-          .contentShape(Rectangle())
+// Its own view, so pointer moves for the magnification never rebuild NotchRoot.
+private struct NotchColumn: View {
+  let controller: NotchController
+  let rings: [NotchRing]
+  let disk: DiskSpace?
+  let memory: MemoryStats?
+  @State private var diskHovered = false
+  @State private var memoryHovered = false
+  @State private var mouseY: CGFloat?
+
+  var body: some View {
+    let metrics = controller.metrics
+    let cells = rings.count + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1)
+    VStack(spacing: metrics.cellSpacing) {
+      ForEach(Array(rings.enumerated()), id: \.element.id) { index, ring in
+        UsageRing(ring: ring, highlighted: controller.openAgent == ring.agent, metrics: metrics)
+          .modifier(magnified(index, metrics))
           .onHover { $0 ? controller.open(ring.agent) : controller.scheduleClose() }
           .onTapGesture { controller.openDashboard(ring.agent) }
       }
       if let disk {
-        DiskRing(disk: disk, highlighted: diskHovered)
-          .frame(width: NotchModel.notchDepth)
-          .contentShape(Rectangle())
+        DiskRing(disk: disk, highlighted: diskHovered, metrics: metrics)
+          .modifier(magnified(rings.count, metrics))
           .onHover { hovering in
             diskHovered = hovering
             if hovering { controller.scheduleClose() }
@@ -252,9 +285,8 @@ struct NotchRoot: View {
           .onDisappear { diskHovered = false }
       }
       if let memory {
-        MemoryRing(memory: memory, highlighted: memoryHovered)
-          .frame(width: NotchModel.notchDepth)
-          .contentShape(Rectangle())
+        MemoryRing(memory: memory, highlighted: memoryHovered, metrics: metrics)
+          .modifier(magnified(cells - 1, metrics))
           .onHover { hovering in
             memoryHovered = hovering
             if hovering { controller.scheduleClose() }
@@ -264,14 +296,83 @@ struct NotchRoot: View {
           .onDisappear { memoryHovered = false }
       }
     }
-    .padding(.top, NotchModel.curl + NotchModel.padTop)
-    .padding(.bottom, NotchModel.curl + NotchModel.padBottom)
-    .frame(
-      width: NotchModel.notchDepth,
-      height: NotchModel.notchHeight(
-        ringCount: rings.count + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1))
-    )
-    .background(NotchShape().fill(.black))
+    .padding(.top, metrics.curl + metrics.padTop)
+    .padding(.bottom, metrics.curl + metrics.padBottom)
+    .frame(width: metrics.notchDepth, height: metrics.notchHeight(ringCount: cells))
+    .background(NotchShape(metrics: metrics).fill(.black))
+    .overlay(alignment: .bottom) {
+      ResizeGrabber(controller: controller, metrics: metrics).padding(.bottom, metrics.curl)
+    }
+    .onContinuousHover { phase in
+      switch phase {
+      case .active(let location): mouseY = location.y
+      case .ended: mouseY = nil
+      }
+    }
+  }
+
+  private func magnified(_ index: Int, _ metrics: NotchMetrics) -> Magnified {
+    let amount = controller.isResizing ? nil : controller.magnification
+    return Magnified(
+      scale: amount.map { metrics.magnification(cell: index, mouseY: mouseY, amount: $0) } ?? 1,
+      hovering: mouseY != nil, width: metrics.notchDepth)
+  }
+}
+
+private struct Magnified: ViewModifier {
+  let scale: CGFloat
+  let hovering: Bool
+  let width: CGFloat
+
+  // The rings follow the pointer as is and only spring when it enters or leaves, like the Dock.
+  func body(content: Content) -> some View {
+    content
+      .frame(width: width)
+      .contentShape(Rectangle())
+      .scaleEffect(scale)
+      .animation(.spring(duration: 0.25), value: hovering)
+  }
+}
+
+/// The notch's Dock separator: drag it away from the screen edge to grow the notch.
+private struct ResizeGrabber: View {
+  let controller: NotchController
+  let metrics: NotchMetrics
+  @State private var hovered = false
+
+  var body: some View {
+    let active = hovered || controller.isResizing
+    Capsule()
+      .fill(Color.white.opacity(active ? 0.6 : 0.3))
+      .frame(width: 18 * metrics.scale, height: 3 * metrics.scale)
+      .frame(width: metrics.notchDepth * 0.6, height: metrics.padBottom)
+      .contentShape(Rectangle())
+      .onHover { hovering in
+        hovered = hovering
+        if hovering {
+          NSCursor.resizeLeftRight.set()
+        } else if !controller.isResizing {
+          NSCursor.arrow.set()
+        }
+      }
+      .gesture(
+        DragGesture(minimumDistance: 0)
+          .onChanged { _ in
+            let mouseX = NSEvent.mouseLocation.x
+            if controller.isResizing {
+              controller.resize(mouseX: mouseX)
+            } else {
+              controller.beginResize(mouseX: mouseX)
+            }
+            NSCursor.resizeLeftRight.set()
+          }
+          .onEnded { _ in
+            controller.endResize()
+            if !hovered { NSCursor.arrow.set() }
+          }
+      )
+      .animation(.easeOut(duration: 0.15), value: active)
+      .accessibilityHidden(true)
   }
 }
 
