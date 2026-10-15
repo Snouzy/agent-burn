@@ -21,6 +21,8 @@ use super::{
 const DEFAULT_MODEL: &str = "kimi-for-coding";
 const HIGHSPEED_MODEL: &str = "kimi-for-coding-highspeed";
 const K3_MODEL: &str = "k3";
+/// K3 capped at a 256K context window; same model, same price.
+const K3_256K_MODEL: &str = "k3-256k";
 const DEFAULT_PROVIDER: &str = "moonshot";
 const KIMI_FOR_CODING_K2_6_CUTOFF_MS: i64 = 1_776_698_890_072;
 /// Kimi Code's coding-plan models have no LiteLLM key; price them as the
@@ -399,7 +401,7 @@ pub(crate) fn plan_pricing_model(model: &str) -> Option<&'static str> {
     match model {
         DEFAULT_MODEL => Some(KIMI_CODE_PLAN_PRICING_MODEL),
         HIGHSPEED_MODEL => Some(HIGHSPEED_PRICING_MODEL),
-        K3_MODEL => Some(K3_PRICING_MODEL),
+        K3_MODEL | K3_256K_MODEL => Some(K3_PRICING_MODEL),
         _ => None,
     }
 }

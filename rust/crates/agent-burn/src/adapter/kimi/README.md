@@ -102,7 +102,7 @@ Kimi's coding-plan model ids are not API model names, so LiteLLM has no
 | `kimi-for-coding` (legacy tree) | `moonshot/kimi-k2.5` before 2026-04-20T15:28:10.072Z, then `moonshot/kimi-k2.6` |
 | `kimi-for-coding` (Kimi Code tree) | `moonshot/kimi-k2.7-code` |
 | `kimi-for-coding-highspeed` (either tree) | `moonshot/kimi-k2.7-code-highspeed` |
-| `k3` | `moonshot/kimi-k3` |
+| `k3`, `k3-256k` | `moonshot/kimi-k3` |
 | anything else | `moonshot/<model>`, `kimi/<model>`, `<model>` |
 
 `moonshot/kimi-k2.7-code`, `moonshot/kimi-k2.7-code-highspeed`, and

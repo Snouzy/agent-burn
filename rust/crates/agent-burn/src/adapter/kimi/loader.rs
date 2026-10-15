@@ -229,6 +229,7 @@ mod tests {
                 r#"{"type":"usage.record","agentId":"main","model":"kimi-code/kimi-for-coding","usage":{"inputOther":1000000,"output":0,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1779256800000}"#,
                 r#"{"type":"usage.record","agentId":"main","model":"my-k3","usage":{"inputOther":1000000,"output":0,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1779256801000}"#,
                 r#"{"type":"usage.record","agentId":"main","model":"kimi-code/kimi-for-coding-highspeed","usage":{"inputOther":1000000,"output":0,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1779256802000}"#,
+                r#"{"type":"usage.record","agentId":"main","model":"kimi-code/k3-256k","usage":{"inputOther":1000000,"output":0,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1779256803000}"#,
             ]
             .join("\n"),
         });
@@ -244,6 +245,7 @@ mod tests {
                 ("kimi-for-coding".to_string(), 0.95),
                 ("k3".to_string(), 3.0),
                 ("kimi-for-coding-highspeed".to_string(), 1.9),
+                ("k3-256k".to_string(), 3.0),
             ]
         );
         assert!(
