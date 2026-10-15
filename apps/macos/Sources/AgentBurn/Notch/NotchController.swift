@@ -324,13 +324,18 @@ private struct Magnified: ViewModifier {
   let hovering: Bool
   let width: CGFloat
 
-  // The rings follow the pointer as is and only spring when it enters or leaves, like the Dock.
+  // Pointer events come slower and less evenly than display frames, so a short interactive
+  // spring fills the frames in between. Each event retargets it without losing its speed.
   func body(content: Content) -> some View {
     content
       .frame(width: width)
       .contentShape(Rectangle())
       .scaleEffect(scale)
-      .animation(.spring(duration: 0.25), value: hovering)
+      .animation(
+        hovering
+          ? .interactiveSpring(response: 0.16, dampingFraction: 0.86)
+          : .spring(duration: 0.25),
+        value: scale)
   }
 }
 
