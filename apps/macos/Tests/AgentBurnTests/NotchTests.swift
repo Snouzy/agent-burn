@@ -1088,6 +1088,33 @@ private final class MemoryReader {
   #expect(try #require(NotchModel.card(store: store, agent: "claude", now: now)).sessionText == nil)
 }
 
+@Test @MainActor func notchShowsAHarnessWithQuotasButNoLoggedUsage() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  // A fresh Kimi login has live quotas before any session is written.
+  store.summary = SummaryReport(
+    totals: Totals(totalCost: 0, totalTokens: 0), agents: [agentUsage("claude")], models: [],
+    daily: nil, subscription: nil)
+  let source = store.customPath + "|" + store.codexHomes
+  let now = Date.now
+  var history = QuotaHistory()
+  for (agent, used) in [("claude", 10.0), ("kimi", 35.0)] {
+    history.record(
+      QuotaReading(
+        agent: agent, observedAt: now.timeIntervalSince1970 * 1000,
+        window: QuotaWindow(
+          windowMinutes: 10_080, usedPercent: used, elapsedPercent: 50, apiEquivalentSpent: 0)),
+      source: source)
+  }
+  try QuotaHistoryFile(directory: directory).save(history)
+  store.reloadQuotas()
+
+  #expect(NotchModel.rings(store: store, now: now).map(\.agent) == ["claude", "kimi"])
+}
+
 @Test @MainActor func notchCardWithAFiveHourLineKeepsItsHeight() throws {
   let base = codexCardData()
   let data = NotchCardData(

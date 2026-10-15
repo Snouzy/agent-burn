@@ -2,7 +2,9 @@ import Foundation
 
 extension NotchModel {
   @MainActor static func rings(store: UsageStore, now: Date = .now) -> [NotchRing] {
-    agents(known: store.knownAgents, hasForecast: { store.forecast(for: $0) != nil }).map {
+    // A harness can have live quotas before it has logged any usage, e.g. right after a login.
+    let known = Set(store.knownAgents).union(harnessAgents)
+    return agents(known: Array(known), hasForecast: { store.forecast(for: $0) != nil }).map {
       agent in
       let forecast = store.forecast(for: agent)!
       return NotchRing(
