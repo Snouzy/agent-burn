@@ -178,21 +178,21 @@ fn parse_summary_command(
 }
 
 /// Parse `harness <agent>` - the focused per-agent weekly-limit detail:
-///   harness <codex|claude> [--value --claude-plan --codex-plan]
+///   harness <codex|claude|kimi> [--value --claude-plan --codex-plan]
 fn parse_harness_command(
     parser: &mut ArgParser,
     mut shared: SharedArgs,
 ) -> Result<Command, String> {
     let agent = match parser.next() {
-        Some(token) if matches!(token.as_str(), "codex" | "claude") => token,
+        Some(token) if matches!(token.as_str(), "codex" | "claude" | "kimi") => token,
         Some(token) => {
             return Err(format!(
-                "Unsupported agent '{token}' for harness. Use '{CLI_NAME} harness <codex|claude>'."
+                "Unsupported agent '{token}' for harness. Use '{CLI_NAME} harness <codex|claude|kimi>'."
             ));
         }
         None => {
             return Err(format!(
-                "Specify an agent: {CLI_NAME} harness <codex|claude>"
+                "Specify an agent: {CLI_NAME} harness <codex|claude|kimi>"
             ));
         }
     };

@@ -1,19 +1,39 @@
 import Foundation
 
 extension NotchModel {
-  @MainActor static func rings(store: UsageStore, now: Date = .now) -> [NotchRing] {
-    agents(known: store.knownAgents, hasForecast: { store.forecast(for: $0) != nil }).map {
+  @MainActor static func rings(store: UsageStore, hiding hidden: Set<String> = [], now: Date = .now)
+    -> [NotchRing]
+  {
+    // A harness can have live quotas before it has logged any usage, e.g. right after a login.
+    let known = Set(store.knownAgents).union(harnessAgents).subtracting(hidden)
+    return agents(known: Array(known), hasForecast: { store.forecast(for: $0) != nil }).map {
       agent in
       let forecast = store.forecast(for: agent)!
       return NotchRing(
         agent: agent, usedPercent: forecast.window.usedPercent,
         stale: !forecast.isFresh(at: now) || store.quotaError(for: agent) != nil,
-        style: style(for: agent))
+        style: quotaMeterStyle(for: agent, forecast: forecast),
+        sessionUsedPercent: doubleRingAgents.contains(agent)
+          ? session(store: store, agent: agent, now: now)?.usedPercent : nil)
     }
   }
 
-  @MainActor static func cards(store: UsageStore, now: Date = .now) -> [NotchCardData] {
-    rings(store: store, now: now).compactMap { card(store: store, agent: $0.agent, now: now) }
+  /// The 5-hour window; once it has elapsed it is fully restored until the next request.
+  @MainActor private static func session(store: UsageStore, agent: String, now: Date)
+    -> (usedPercent: Double, reset: Date?)?
+  {
+    guard let key = sessionQuotaAgent(for: agent), let forecast = store.forecast(for: key) else {
+      return nil
+    }
+    return forecast.reset > now ? (forecast.window.usedPercent, forecast.reset) : (0, nil)
+  }
+
+  @MainActor static func cards(store: UsageStore, hiding hidden: Set<String> = [], now: Date = .now)
+    -> [NotchCardData]
+  {
+    rings(store: store, hiding: hidden, now: now).compactMap {
+      card(store: store, agent: $0.agent, now: now)
+    }
   }
 
   @MainActor static func card(store: UsageStore, agent: String, now: Date = .now) -> NotchCardData?
@@ -38,11 +58,18 @@ extension NotchModel {
       }
     let range = store.chartRange(for: agent)
     let stale = !forecast.isFresh(at: now) || store.quotaError(for: agent) != nil
+    let session =
+      doubleRingAgents.contains(agent) ? self.session(store: store, agent: agent, now: now) : nil
     return NotchCardData(
       agent: agent, title: harnessName(agent), plan: plan, forecast: forecast,
       samples: store.samples(for: agent, range: range, now: now),
       staleText: stale ? savedReading(forecast.observedAt, now: now) : nil,
-      spend: spend, models: models, style: style(for: agent), range: range)
+      spend: spend, models: models, style: quotaMeterStyle(for: agent, forecast: forecast),
+      range: range,
+      sessionText: session.map {
+        "5h \(Int($0.usedPercent.rounded()))% used"
+          + ($0.reset.map { " · resets " + $0.formatted(date: .omitted, time: .shortened) } ?? "")
+      })
   }
 
   @MainActor static func cardHeight(store: UsageStore, agent: String) -> CGFloat? {
@@ -55,10 +82,5 @@ extension NotchModel {
     let formatter = RelativeDateTimeFormatter()
     formatter.dateTimeStyle = .named
     return "Saved reading · " + formatter.localizedString(for: observedAt, relativeTo: now)
-  }
-
-  // Cursor has a forecast only while promotional credits burn: see cursorQuotaReading.
-  private static func style(for agent: String) -> QuotaMeterStyle {
-    agent == "cursor" ? .promotionalCredits : .weekly
   }
 }

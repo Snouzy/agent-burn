@@ -4,7 +4,7 @@ expression: help_text()
 ---
 USAGE:
   agent-burn [summary] [RANGE] <OPTIONS>
-  agent-burn harness <codex|claude> <OPTIONS>
+  agent-burn harness <codex|claude|kimi> <OPTIONS>
 
 COMMANDS:
   summary                    Compare API-equivalent agent usage with subscription value

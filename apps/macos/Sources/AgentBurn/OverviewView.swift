@@ -73,7 +73,8 @@ struct OverviewView: View {
       remainingQuota(
         for: source, forecast: store.forecast(for: source.rawValue),
         cursorAccount: store.summary?.cursorAccount,
-        claudeAccount: store.summary?.claudeAccount
+        claudeAccount: store.summary?.claudeAccount,
+        kimiAccount: store.summary?.kimiAccount
       ).map { (source, $0) }
     }
     if !quotas.isEmpty {

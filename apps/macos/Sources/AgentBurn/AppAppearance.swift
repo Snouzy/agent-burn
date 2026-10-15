@@ -42,6 +42,11 @@ import SwiftUI
     }
   }
 
+  // The notch redraws from this set itself; ringsChanged then refits the panel.
+  var hiddenNotchAgents: Set<String> {
+    didSet { defaults.set(hiddenNotchAgents.sorted(), forKey: "hiddenNotchAgents") }
+  }
+
   var notchScale: Double {
     didSet {
       defaults.set(notchScale, forKey: "notchScale")
@@ -73,6 +78,7 @@ import SwiftUI
     notchDisplay = defaults.string(forKey: "notchDisplay")
     showsDiskSpace = defaults.bool(forKey: "showsDiskSpace")
     showsMemory = defaults.bool(forKey: "showsMemory")
+    hiddenNotchAgents = Set(defaults.stringArray(forKey: "hiddenNotchAgents") ?? [])
     notchScale = defaults.object(forKey: "notchScale") as? Double ?? 1
     magnifiesNotch = defaults.bool(forKey: "magnifiesNotch")
     magnification = defaults.object(forKey: "magnification") as? Double ?? 0.25
@@ -149,6 +155,16 @@ struct AppearanceSettings: View {
         .disabled(!appearance.showsNotch)
       Text("Adds a ring with the available RAM, colored by memory pressure.")
         .font(.caption).foregroundStyle(.secondary)
+      ForEach(appearance.hiddenNotchAgents.sorted(), id: \.self) { agent in
+        LabeledContent(harnessName(agent)) {
+          Button("Show in notch") { appearance.hiddenNotchAgents.remove(agent) }
+        }
+        .disabled(!appearance.showsNotch)
+      }
+      if !appearance.hiddenNotchAgents.isEmpty {
+        Text("Hidden with the × that appears when you hover a ring.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
       LabeledContent("Size") {
         Slider(value: $appearance.notchScale, in: NotchMetrics.scales) {
           Text("Size")

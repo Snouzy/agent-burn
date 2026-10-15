@@ -44,6 +44,7 @@ fn agent_hex(agent: &str) -> &'static str {
         "openclaw" | "opencode" => "#22d3ee",
         "pi" => "#a78bfa",
         "amp" => "#fb7185",
+        "kimi" => "#32ade6",
         _ => "#94a3b8",
     }
 }

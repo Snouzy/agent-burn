@@ -43,6 +43,7 @@ flags:
 - OpenCode: `rust/crates/agent-burn/src/adapter/opencode/README.md`
 - Amp: `rust/crates/agent-burn/src/adapter/amp/README.md`
 - pi-agent: `rust/crates/agent-burn/src/adapter/pi/README.md`
+- Kimi (kimi-cli and Kimi Code): `rust/crates/agent-burn/src/adapter/kimi/README.md`
 
 ## Implementation Notes
 

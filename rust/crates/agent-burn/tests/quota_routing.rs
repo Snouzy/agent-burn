@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn quota_only_harnesses_do_not_return_cursor_skip_payloads() {
-    for agent in ["codex", "claude"] {
+    for agent in ["codex", "claude", "kimi"] {
         let output = Command::new(env!("CARGO_BIN_EXE_agent-burn"))
             .args(["harness", agent, "--json", "--offline"])
             .env("AGENT_BURN_QUOTA_ONLY", "1")

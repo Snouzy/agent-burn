@@ -159,7 +159,10 @@ struct NativeUsageView: View {
           }
         }.font(.caption).foregroundStyle(.secondary)
       } else {
-        if let agent, ["codex", "claude"].contains(agent) { quotaSection(agent) }
+        if let agent, harnessAgents.contains(agent) {
+          quotaSection(
+            agent, style: quotaMeterStyle(for: agent, forecast: store.forecast(for: agent)))
+        }
         PeriodBar()
         ContentUnavailableView {
           Label(
@@ -275,6 +278,10 @@ struct NativeUsageView: View {
       ClaudeAccountView(
         account: store.summary?.claudeAccount,
         plan: store.summary?.subscription?.agents.first { $0.agent == "claude" })
+    } else if agent == "kimi" {
+      KimiAccountView(
+        account: store.summary?.kimiAccount,
+        plan: store.summary?.subscription?.agents.first { $0.agent == "kimi" })
     } else if agent == "codex" {
       quotaSection("codex")
       if let days = store.reports["codex"]?.limitUsageDaily,

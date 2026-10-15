@@ -12,6 +12,7 @@ agent-burn summary --value --json
 agent-burn summary --value --cursor-plan ultra --json
 agent-burn harness claude --json
 agent-burn harness codex --json
+agent-burn harness kimi --json
 ```
 
 Use `--jq` to filter JSON directly:
@@ -61,3 +62,20 @@ Claude’s live OAuth usage meters, including the modern `limits` array.
 Extra-usage amounts are dollars. Absent amounts are null, not zero. These
 current account meters are distinct from historical API-equivalent spend and
 are omitted in offline mode.
+
+### Kimi Code account meters
+
+Live `agent-burn summary --value --json` can include `kimiAccount` when Kimi Code
+credentials are available and `--agents` includes `kimi` or is omitted. Keys:
+`sessionUsedPercent` / `sessionResetsAtMs` (5-hour session),
+`weeklyUsedPercent` / `weeklyResetsAtMs` (legacy plans only),
+`monthlyUsedPercent` / `monthlyResetsAtMs` (monthly Kimi Code quota),
+`monthlyTotalUsedPercent` / `monthlyTotalResetsAtMs` (monthly account total),
+and `boosterRemaining` / `boosterTotal` / `boosterCurrency` (booster balance in
+major currency units). Percents are 0–100 and reset times are epoch
+milliseconds. Meters Kimi does not report are omitted, not null. These meters
+are omitted in offline mode and while the stored Kimi Code access token is
+expired, because Agent Burn never refreshes it.
+
+`harness kimi --json` has no plan, price, or value multiple. Its `window` is the
+weekly limit when Kimi reports one, otherwise the monthly Kimi Code quota.

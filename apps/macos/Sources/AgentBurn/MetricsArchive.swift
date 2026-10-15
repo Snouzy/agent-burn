@@ -77,6 +77,7 @@ struct MetricsArchive: Codable {
       agents: usages, models: live?.models ?? [], daily: days, subscription: live?.subscription)
     report.cursorAccount = live?.cursorAccount
     report.claudeAccount = live?.claudeAccount
+    report.kimiAccount = live?.kimiAccount
     return report
   }
 }

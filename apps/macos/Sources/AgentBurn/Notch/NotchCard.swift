@@ -16,6 +16,8 @@ struct NotchCardData {
   let models: [ModelCost]
   let style: QuotaMeterStyle
   let range: QuotaChartRange
+  /// The 5-hour window, folded into the limit row so the card keeps its height.
+  var sessionText: String? = nil
 
   var resetText: String { "\(style.resetDateTitle) \(quotaDateCompact(forecast.reset))" }
 }
@@ -97,8 +99,11 @@ struct NotchCardRows: View {
         }
       }
       .frame(height: 4)
-      Text(data.staleText ?? "\(Int(used.rounded()))% used")
-        .font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.6))
+      Text(
+        [data.staleText ?? "\(Int(used.rounded()))% used", data.sessionText].compactMap { $0 }
+          .joined(separator: " · ")
+      )
+      .font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.6)).lineLimit(1)
     }
   }
 

@@ -228,6 +228,12 @@ final class UsageStore {
     // enabled after a spawn failure. Recover before readings become stale.
     var agents = ["codex", "claude"]
     if cursorHasPromotionalCredits(summary?.cursorAccount) { agents.append("cursor") }
+    // Most people have no Kimi account: its failures must not force a collection every minute.
+    if summary?.kimiAccount != nil
+      || quotaHistory.latest(agent: "kimi", source: quotaSourceKey) != nil
+    {
+      agents.append("kimi")
+    }
     let overdue = agents.contains { agent in
       guard let reading = quotaHistory.latest(agent: agent, source: quotaSourceKey) else {
         return true
@@ -287,14 +293,14 @@ final class UsageStore {
       let useOffline = offline
       // Quota collection is independent; these reports provide spend details.
       await withTaskGroup(of: Void.self) { group in
-        for agent in ["codex", "claude"] where selectedAgent == nil || selectedAgent == agent {
+        for agent in harnessAgents where selectedAgent == nil || selectedAgent == agent {
           group.addTask {
             await self.loadHarness(agent, executable: executable, offline: useOffline)
           }
         }
       }
     } catch {
-      for agent in ["codex", "claude"] where selectedAgent == nil || selectedAgent == agent {
+      for agent in harnessAgents where selectedAgent == nil || selectedAgent == agent {
         errors[agent] = error.localizedDescription
       }
     }
@@ -327,6 +333,9 @@ final class UsageStore {
     summary?.claudeAccount =
       cache?.summaries.values.sorted { $0.date > $1.date }
       .compactMap { $0.report.claudeAccount }.first
+    summary?.kimiAccount =
+      cache?.summaries.values.sorted { $0.date > $1.date }
+      .compactMap { $0.report.kimiAccount }.first
     updated["summary"] = saved?.date
     errors["summary"] = summaryErrors[currentQuery.cacheKey]
   }
@@ -435,7 +444,8 @@ final class UsageStore {
   var remainingPercent: Double? {
     remainingQuota(
       for: quotaSource, forecast: forecast(for: quotaSource.rawValue),
-      cursorAccount: summary?.cursorAccount, claudeAccount: summary?.claudeAccount)
+      cursorAccount: summary?.cursorAccount, claudeAccount: summary?.claudeAccount,
+      kimiAccount: summary?.kimiAccount)
   }
 
   func archivedDaily(for agent: String) -> [DailyUsage] {
@@ -468,10 +478,7 @@ final class UsageStore {
   }
 
   private func recordAccountQuotas(_ report: SummaryReport) {
-    let readings = [
-      report.cursorAccount.flatMap { cursorQuotaReading($0) },
-      report.claudeAccount.flatMap { claudeSessionReading($0) },
-    ].compactMap { $0 }
+    let readings = accountQuotaReadings(report)
     guard !readings.isEmpty else { return }
     for reading in readings { quotaHistory.record(reading, source: quotaSourceKey) }
     do {

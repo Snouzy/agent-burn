@@ -8,7 +8,7 @@ icon: Terminal
 
 ```bash
 agent-burn summary [range]
-agent-burn harness <claude|codex>
+agent-burn harness <claude|codex|kimi>
 ```
 
 ### Summary
@@ -48,6 +48,7 @@ Summary-specific options:
 ```bash
 agent-burn harness claude --value
 agent-burn harness codex --value
+agent-burn harness kimi
 agent-burn harness claude --json --offline
 ```
 
@@ -58,6 +59,8 @@ Harness-specific options:
 | `--value` | Show API-equivalent value against the monthly plan |
 | `--claude-plan <pro\|max-5x\|max-20x\|price>` | Override Claude plan |
 | `--codex-plan <plus\|pro\|price>` | Override Codex plan |
+
+Kimi Code has no plan override. `harness kimi` uses Kimi's live weekly limit on legacy plans, otherwise its monthly Kimi Code quota, and shows API-equivalent spend without a value multiple. See [Kimi Code](/docs/kimi).
 
 ## Shared options
 
