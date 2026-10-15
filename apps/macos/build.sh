@@ -53,7 +53,10 @@ ditto "$bin/AgentBurn_AgentBurn.bundle" "$app/Contents/Resources/AgentBurn_Agent
 ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 install_name_tool -add_rpath '@executable_path/../Frameworks' "$app/Contents/MacOS/AgentBurn"
 # Finder and the running app use the exact same packaged artwork.
-cp "$app/Contents/Resources/AgentBurn_AgentBurn.bundle/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+# Newer SwiftPM nests bundle resources under Contents/Resources.
+icon="$app/Contents/Resources/AgentBurn_AgentBurn.bundle/AppIcon.icns"
+[[ -f "$icon" ]] || icon="$app/Contents/Resources/AgentBurn_AgentBurn.bundle/Contents/Resources/AppIcon.icns"
+cp "$icon" "$app/Contents/Resources/AppIcon.icns"
 cp ../../LICENSE "$app/Contents/Resources/LICENSE.txt"
 cp .build/checkouts/Sparkle/LICENSE "$app/Contents/Resources/Sparkle-LICENSE.txt"
 cat > "$app/Contents/Info.plist" <<PLIST
