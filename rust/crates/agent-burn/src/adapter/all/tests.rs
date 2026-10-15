@@ -383,6 +383,48 @@ fn uses_non_cached_codex_input_tokens_in_all_rows() {
 }
 
 #[test]
+fn prices_each_codex_project_with_its_own_model_usage() {
+    let mut pricing = PricingMap::default();
+    pricing.load_json(
+        r#"{
+            "gpt-5": { "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000010 },
+            "gpt-5-mini": { "input_cost_per_token": 0.0000002, "output_cost_per_token": 0.000002 }
+        }"#,
+    );
+    let usage = |input_tokens, output_tokens| CodexModelUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens: input_tokens + output_tokens,
+        ..CodexModelUsage::default()
+    };
+    let mut group = CodexGroup {
+        input_tokens: 1_600,
+        output_tokens: 160,
+        total_tokens: 1_760,
+        ..CodexGroup::default()
+    };
+    group.models.insert("gpt-5".to_string(), usage(1_100, 110));
+    group
+        .models
+        .insert("gpt-5-mini".to_string(), usage(500, 50));
+    let app = group.projects.entry("/dev/app".into()).or_default();
+    app.insert("gpt-5".to_string(), usage(1_000, 100));
+    let web = group.projects.entry("/dev/web".into()).or_default();
+    web.insert("gpt-5".to_string(), usage(100, 10));
+    web.insert("gpt-5-mini".to_string(), usage(500, 50));
+
+    let row = codex_group_row("2026-01-02", &group, &pricing, CodexSpeed::Standard);
+
+    let app = &row.project_breakdowns[0];
+    let web = &row.project_breakdowns[1];
+    assert_eq!((app.cwd.as_ref(), app.total_tokens), ("/dev/app", 1_100));
+    assert!((app.cost - 0.002).abs() < 1e-12);
+    assert_eq!((web.cwd.as_ref(), web.total_tokens), ("/dev/web", 660));
+    assert!((web.cost - 0.0004).abs() < 1e-12);
+    assert!((app.cost + web.cost - row.total_cost).abs() < 1e-12);
+}
+
+#[test]
 fn includes_codex_model_breakdowns_in_all_rows() {
     let mut pricing = PricingMap::default();
     pricing.load_json(

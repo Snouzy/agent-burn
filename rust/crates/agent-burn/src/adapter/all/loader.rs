@@ -1,9 +1,14 @@
-use std::{collections::BTreeMap, sync::mpsc, thread};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, mpsc},
+    thread,
+};
 
 use serde_json::{Value, json};
 
 use crate::{
-    CodexGroup, LoadedEntry, ModelBreakdown, PricingMap, Result, SessionAccumulator, UsageSummary,
+    CodexGroup, LoadedEntry, ModelBreakdown, PricingMap, ProjectBreakdown, Result,
+    SessionAccumulator, UsageSummary,
     adapter::{
         amp, claude, codebuff, codex, copilot, cursor, droid, gemini, goose, hermes, kilo, kimi,
         openclaw, opencode, pi, qwen,
@@ -633,7 +638,20 @@ pub(super) fn codex_group_row(
         metadata_agents: Some(vec!["codex"]),
         agent_breakdowns: None,
         model_breakdowns,
-        project_breakdowns: Vec::new(),
+        project_breakdowns: group
+            .projects
+            .iter()
+            .map(|(cwd, models)| ProjectBreakdown {
+                cwd: Arc::clone(cwd),
+                total_tokens: models.values().map(|usage| usage.total_tokens).sum(),
+                cost: models
+                    .iter()
+                    .map(|(model, usage)| {
+                        codex::calculate_codex_model_cost(model, usage, pricing, speed)
+                    })
+                    .sum(),
+            })
+            .collect(),
     }
 }
 

@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
 };
 
@@ -10,7 +10,7 @@ use jiff::tz::TimeZone as JiffTimeZone;
 use rustc_hash::FxHasher;
 
 use crate::{
-    CodexGroup, CodexTokenUsageEvent, Result,
+    CodexGroup, CodexModelUsage, CodexTokenUsageEvent, Result,
     cli::{AgentReportKind, SharedArgs, WeekDay},
     fast::FxHashSet,
     format_date_tz, parse_ts_timestamp, parse_tz, wants_json, week_start,
@@ -319,7 +319,24 @@ fn accumulate_codex_event_into_group(
         group.last_activity = Some(event.timestamp.clone());
     }
 
-    let model_usage = group.models.entry(model.to_string()).or_default();
+    add_event_to_models(&mut group.models, event, model);
+    let cwd = event.cwd.as_deref().unwrap_or_default();
+    let project = match group.projects.get_mut(cwd) {
+        Some(project) => project,
+        None => group.projects.entry(Arc::from(cwd)).or_default(),
+    };
+    add_event_to_models(project, event, model);
+}
+
+fn add_event_to_models(
+    models: &mut BTreeMap<String, CodexModelUsage>,
+    event: &CodexTokenUsageEvent,
+    model: &str,
+) {
+    let model_usage = match models.get_mut(model) {
+        Some(model_usage) => model_usage,
+        None => models.entry(model.to_string()).or_default(),
+    };
     model_usage.input_tokens += event.input_tokens;
     model_usage.cached_input_tokens += event.cached_input_tokens;
     model_usage.output_tokens += event.output_tokens;
@@ -398,15 +415,25 @@ fn merge_groups(target: &mut BTreeMap<String, CodexGroup>, source: BTreeMap<Stri
         }) {
             target_group.last_activity = group.last_activity;
         }
-        for (model, usage) in group.models {
-            let target_usage = target_group.models.entry(model).or_default();
-            target_usage.input_tokens += usage.input_tokens;
-            target_usage.cached_input_tokens += usage.cached_input_tokens;
-            target_usage.output_tokens += usage.output_tokens;
-            target_usage.reasoning_output_tokens += usage.reasoning_output_tokens;
-            target_usage.total_tokens += usage.total_tokens;
-            target_usage.is_fallback |= usage.is_fallback;
+        merge_models(&mut target_group.models, group.models);
+        for (cwd, models) in group.projects {
+            merge_models(target_group.projects.entry(cwd).or_default(), models);
         }
+    }
+}
+
+fn merge_models(
+    target: &mut BTreeMap<String, CodexModelUsage>,
+    source: BTreeMap<String, CodexModelUsage>,
+) {
+    for (model, usage) in source {
+        let target_usage = target.entry(model).or_default();
+        target_usage.input_tokens += usage.input_tokens;
+        target_usage.cached_input_tokens += usage.cached_input_tokens;
+        target_usage.output_tokens += usage.output_tokens;
+        target_usage.reasoning_output_tokens += usage.reasoning_output_tokens;
+        target_usage.total_tokens += usage.total_tokens;
+        target_usage.is_fallback |= usage.is_fallback;
     }
 }
 
@@ -468,7 +495,127 @@ mod tests {
     use agent_burn_test_support::fs_fixture;
     use serde_json::json;
 
-    use crate::adapter::codex::paths::CodexUsageSource;
+    use crate::{CodexModelUsage, adapter::codex::paths::CodexUsageSource};
+
+    fn token_count_line(timestamp: &str, total_tokens: u64) -> String {
+        json!({
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": total_tokens,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": total_tokens,
+                    },
+                },
+            },
+        })
+        .to_string()
+    }
+
+    fn turn_context_line(cwd: &str) -> String {
+        json!({
+            "timestamp": "2026-05-29T08:00:00.000Z",
+            "type": "turn_context",
+            "payload": { "cwd": cwd, "model": "gpt-5" },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn attributes_usage_to_the_latest_turn_context_cwd() {
+        let fixture = fs_fixture!({
+            "sessions/session.jsonl": [
+                turn_context_line("/dev/app"),
+                token_count_line("2026-05-29T08:01:00.000Z", 100),
+                turn_context_line("/home/.codex/worktrees/fd18/app"),
+                token_count_line("2026-05-29T08:02:00.000Z", 250),
+            ]
+            .join("\n"),
+        });
+        for single_thread in [true, false] {
+            let shared = SharedArgs {
+                single_thread,
+                timezone: Some("UTC".to_string()),
+                ..SharedArgs::default()
+            };
+
+            let groups = load_groups_from_directory(
+                &fixture.path("sessions"),
+                &shared,
+                AgentReportKind::Daily,
+            )
+            .unwrap();
+
+            let projects = &groups["2026-05-29"].projects;
+            let totals = projects
+                .iter()
+                .map(|(cwd, models)| (cwd.as_ref(), models["gpt-5"].total_tokens))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                totals,
+                vec![("/dev/app", 100), ("/home/.codex/worktrees/fd18/app", 150)]
+            );
+        }
+    }
+
+    #[test]
+    fn aggregates_event_projects_by_cwd() {
+        let event = |cwd: Option<&str>, total_tokens| CodexTokenUsageEvent {
+            session_id: "s".to_string(),
+            timestamp: "2026-05-29T08:01:00.000Z".to_string(),
+            model: Some("gpt-5".to_string()),
+            cwd: cwd.map(Arc::from),
+            input_tokens: total_tokens,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens,
+            is_fallback_model: false,
+        };
+
+        let groups = aggregate_events(
+            &[
+                event(Some("/dev/app"), 10),
+                event(None, 20),
+                event(Some("/dev/app"), 30),
+            ],
+            AgentReportKind::Daily,
+            Some("UTC"),
+        )
+        .unwrap();
+
+        let projects = &groups["2026-05-29"].projects;
+        assert_eq!(projects[""]["gpt-5"].total_tokens, 20);
+        assert_eq!(projects["/dev/app"]["gpt-5"].total_tokens, 40);
+    }
+
+    #[test]
+    fn merging_groups_keeps_per_project_usage() {
+        let group = |cwd: &str, total_tokens| {
+            let mut group = CodexGroup::default();
+            group.projects.entry(Arc::from(cwd)).or_default().insert(
+                "gpt-5".to_string(),
+                CodexModelUsage {
+                    total_tokens,
+                    ..CodexModelUsage::default()
+                },
+            );
+            BTreeMap::from([("2026-05-29".to_string(), group)])
+        };
+        let mut groups = group("/dev/app", 10);
+
+        merge_groups(&mut groups, group("/dev/app", 5));
+        merge_groups(&mut groups, group("/dev/web", 7));
+
+        let projects = &groups["2026-05-29"].projects;
+        assert_eq!(projects["/dev/app"]["gpt-5"].total_tokens, 15);
+        assert_eq!(projects["/dev/web"]["gpt-5"].total_tokens, 7);
+    }
 
     #[test]
     fn dedupes_copied_token_usage_across_session_files() {

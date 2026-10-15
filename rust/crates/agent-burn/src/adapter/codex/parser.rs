@@ -3,7 +3,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read},
     path::Path,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
 };
 
 use memchr::memmem::Finder;
@@ -151,6 +151,7 @@ pub(super) fn visit_codex_session_file(
     let mut previous_totals: Option<CodexRawUsage> = None;
     let mut current_model: Option<String> = None;
     let mut current_model_is_fallback = false;
+    let mut current_cwd: Option<Arc<str>> = None;
     let fallback_timestamp = file_modified_timestamp(path);
     let mut skip_replay = replay_second.is_some();
 
@@ -205,6 +206,7 @@ pub(super) fn visit_codex_session_file(
                     &mut previous_totals,
                     &mut current_model,
                     &mut current_model_is_fallback,
+                    &mut current_cwd,
                     &mut visit,
                 )?;
             }
@@ -241,6 +243,7 @@ fn visit_codex_session_entry(
     previous_totals: &mut Option<CodexRawUsage>,
     current_model: &mut Option<String>,
     current_model_is_fallback: &mut bool,
+    current_cwd: &mut Option<Arc<str>>,
     visit: &mut impl FnMut(CodexTokenUsageEvent) -> Result<()>,
 ) -> Result<()> {
     let entry_type = value.entry_type.as_deref();
@@ -248,6 +251,11 @@ fn visit_codex_session_entry(
         if let Some(model) = value.payload.as_ref().and_then(codex_model_from_payload) {
             *current_model = Some(model);
             *current_model_is_fallback = false;
+        }
+        if let Some(cwd) = value.payload.as_ref().and_then(|p| p.cwd.as_deref())
+            && current_cwd.as_deref() != Some(cwd)
+        {
+            *current_cwd = Some(Arc::from(cwd));
         }
         return Ok(());
     }
@@ -299,6 +307,7 @@ fn visit_codex_session_entry(
         session_id: session_id.to_string(),
         timestamp,
         model,
+        cwd: current_cwd.clone(),
         input_tokens: raw_usage.input_tokens,
         cached_input_tokens: raw_usage.cached_input_tokens.min(raw_usage.input_tokens),
         output_tokens: raw_usage.output_tokens,
@@ -387,6 +396,7 @@ fn visit_codex_exec_usage_event(
         session_id: session_id.to_string(),
         timestamp: timestamps.event,
         model,
+        cwd: None,
         input_tokens: raw_usage.input_tokens,
         cached_input_tokens: raw_usage.cached_input_tokens.min(raw_usage.input_tokens),
         output_tokens: raw_usage.output_tokens,

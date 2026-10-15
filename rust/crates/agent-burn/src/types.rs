@@ -151,6 +151,8 @@ pub(crate) struct CodexTokenUsageEvent {
     pub(crate) session_id: String,
     pub(crate) timestamp: String,
     pub(crate) model: Option<String>,
+    /// Working directory from the latest `turn_context`; headless exec usage has none.
+    pub(crate) cwd: Option<Arc<str>>,
     pub(crate) input_tokens: u64,
     pub(crate) cached_input_tokens: u64,
     pub(crate) output_tokens: u64,
@@ -177,6 +179,8 @@ pub(crate) struct CodexGroup {
     pub(crate) reasoning_output_tokens: u64,
     pub(crate) total_tokens: u64,
     pub(crate) models: BTreeMap<String, CodexModelUsage>,
+    /// Per-model usage keyed by session cwd; the empty key is unattributed.
+    pub(crate) projects: BTreeMap<Arc<str>, BTreeMap<String, CodexModelUsage>>,
     pub(crate) last_activity: Option<String>,
 }
 
