@@ -309,6 +309,7 @@ fn agent_color(agent: &str) -> Color {
         "claude" => Color::Magenta,
         "codex" => Color::Green,
         "cursor" => Color::Red,
+        "kimi" => Color::Cyan,
         _ => Color::Cyan,
     }
 }
@@ -453,6 +454,8 @@ fn print_economics(out: &mut String, view: &WeeklyView, color: Color, shared: &S
                 out.push_str(&kv(shared, "subsidy", summary, Color::Yellow, None));
             }
         }
+        // Only Codex and Claude take a `--<agent>-plan` price flag.
+        None if !matches!(view.agent, "codex" | "claude") => push_equiv(out),
         None => {
             push_equiv(out);
             out.push_str(&detail(
@@ -553,7 +556,8 @@ fn print_spend_mix(out: &mut String, view: &WeeklyView, color: Color, shared: &S
 
 /// Section 3 — the live weekly rate-limit window: used vs time, pace, projection.
 fn print_this_week(out: &mut String, view: &WeeklyView, color: Color, shared: &SharedArgs) {
-    out.push_str("\n  this week\n");
+    let period = view.window.as_ref().map_or("week", period_noun);
+    out.push_str(&format!("\n  this {period}\n"));
     let Some(window) = view.window.as_ref() else {
         let note = if view.live_limits {
             "no weekly limit window available yet"
@@ -608,7 +612,7 @@ fn print_this_week(out: &mut String, view: &WeeklyView, color: Color, shared: &S
             .unwrap_or_default();
         out.push_str(&detail(
             shared,
-            format!("on pace for {} this week{quota_note}", money(projected)),
+            format!("on pace for {} this {period}{quota_note}", money(projected)),
         ));
     }
 }
@@ -1075,6 +1079,16 @@ fn title_case(value: &str) -> String {
     }
 }
 
+/// "month" for a calendar-month quota window (Kimi Code: 28–31 days), else
+/// "week" — the wording every weekly Codex/Claude window has always used.
+fn period_noun(window: &WindowCost) -> &'static str {
+    if (28 * 1440..=31 * 1440).contains(&window.window_minutes) {
+        "month"
+    } else {
+        "week"
+    }
+}
+
 fn window_label(minutes: u64) -> String {
     match minutes {
         10080 => "weekly".to_string(),
@@ -1209,5 +1223,97 @@ mod tests {
         assert_eq!(money(812.0), "$812.00");
         assert_eq!(money(8120.0), "$8.1k");
         assert_eq!(money(1_200_000.0), "$1.2M");
+    }
+
+    #[test]
+    fn kimi_weekly_json_has_the_harness_keys_without_a_plan() {
+        let view = WeeklyView {
+            agent: "kimi",
+            plan_name: None,
+            price: None,
+            window: Some(window_cost(25.0, 30 * 1440, 10.0 * 1440.0, 42.0)),
+            daily: vec![("2026-10-14".to_string(), 3.5)],
+            live_limits: true,
+            reset_credits_available: None,
+            limit_usage: Vec::new(),
+            monthly_equiv: 120.0,
+            models: vec![("kimi-for-coding".to_string(), 120.0, 1_000_000)],
+            spend_mix: Vec::new(),
+            weekly_trend: Vec::new(),
+            image_count: 0,
+            image_price: 0.15,
+        };
+
+        let output = weekly_to_json(&view);
+
+        assert_eq!(output["agent"], "kimi");
+        assert_eq!(output["liveLimits"], true);
+        assert_eq!(output["apiEquivalentPerMonth"], 120.0);
+        assert!(output["plan"].is_null());
+        assert!(output["pricePerMonth"].is_null());
+        assert!(output["economics"].is_null());
+        assert_eq!(output["window"]["windowMinutes"], 43200);
+        assert_eq!(output["daily"][0]["date"], "2026-10-14");
+        assert_eq!(output["daily"][0]["cost"], 3.5);
+        assert_eq!(output["topModels"][0]["model"], "kimi-for-coding");
+        assert_eq!(output["topModels"][0]["tokens"], 1_000_000);
+        assert!(output["estimate"]["valueMultiple"].is_null());
+    }
+
+    fn this_window_view(agent: &'static str, window: WindowCost) -> WeeklyView<'static> {
+        WeeklyView {
+            agent,
+            plan_name: None,
+            price: None,
+            window: Some(window),
+            daily: Vec::new(),
+            live_limits: true,
+            reset_credits_available: None,
+            limit_usage: Vec::new(),
+            monthly_equiv: 0.0,
+            models: Vec::new(),
+            spend_mix: Vec::new(),
+            weekly_trend: Vec::new(),
+            image_count: 0,
+            image_price: 0.15,
+        }
+    }
+
+    fn render_this_window(view: &WeeklyView) -> String {
+        let shared = SharedArgs {
+            no_color: true,
+            ..SharedArgs::default()
+        };
+        let mut out = String::new();
+        print_this_week(&mut out, view, Color::Green, &shared);
+        out
+    }
+
+    #[test]
+    fn weekly_window_section_keeps_its_week_wording() {
+        let view = this_window_view("codex", window_cost(10.0, 10080, 2.0 * 1440.0, 800.0));
+
+        assert_eq!(
+            render_this_window(&view),
+            concat!(
+                "\n  this week\n",
+                "    limit used    10%  \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\n",
+                "    time elapsed  29%  \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\n",
+                "                     \u{2192} 19pt under pace \u{2014} burning slower than the clock\n\n",
+                "      resets in 5.0d \u{b7} $800.00 API-equiv spent so far\n",
+                "      on pace for $2.8k this week \u{b7} ~35% of quota\n",
+            )
+        );
+    }
+
+    #[test]
+    fn monthly_window_section_says_month() {
+        let view = this_window_view("kimi", window_cost(25.0, 30 * 1440, 10.0 * 1440.0, 42.0));
+
+        let out = render_this_window(&view);
+
+        assert!(out.starts_with("\n  this month\n"), "{out}");
+        assert!(out.contains("on pace for $126.00 this month"), "{out}");
+        assert!(!out.contains("week"), "{out}");
     }
 }

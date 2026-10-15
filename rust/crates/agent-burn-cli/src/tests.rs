@@ -199,6 +199,18 @@ fn parses_harness_agent_detail_view() {
 }
 
 #[test]
+fn parses_kimi_harness_detail_view() {
+    let cli = parse(&["agent-burn", "harness", "kimi", "--json"]);
+    let Some(Command::Summary(args)) = cli.command else {
+        panic!("expected harness command");
+    };
+    assert_eq!(args.agent.as_deref(), Some("kimi"));
+    assert!(args.shared.json);
+    assert_eq!(args.claude_plan, None);
+    assert_eq!(args.codex_plan, None);
+}
+
+#[test]
 fn accepts_burn_as_program_name_for_help_selection() {
     assert!(help_text_for_args(&["burn".to_string(), "harness".to_string()]).contains("USAGE:"));
 }
@@ -215,11 +227,11 @@ fn rejects_removed_legacy_commands() {
     );
     assert_eq!(
         parse_error(&["agent-burn", "harness"]),
-        "Specify an agent: agent-burn harness <codex|claude>"
+        "Specify an agent: agent-burn harness <codex|claude|kimi>"
     );
     assert_eq!(
         parse_error(&["agent-burn", "harness", "cursor"]),
-        "Unsupported agent 'cursor' for harness. Use 'agent-burn harness <codex|claude>'."
+        "Unsupported agent 'cursor' for harness. Use 'agent-burn harness <codex|claude|kimi>'."
     );
 }
 

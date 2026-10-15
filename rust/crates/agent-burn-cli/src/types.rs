@@ -52,7 +52,7 @@ pub fn normalize_date_bound(value: &str) -> String {
 /// Arguments shared by two sibling commands:
 /// - `summary` — the all-agents cost overview (`agent` is `None`).
 /// - `harness <agent>` — the focused per-agent detail (weekly limit vs time),
-///   where `agent` is `Some("codex" | "claude")`.
+///   where `agent` is `Some("codex" | "claude" | "kimi")`.
 #[derive(Clone)]
 pub struct SummaryArgs {
     pub shared: SharedArgs,

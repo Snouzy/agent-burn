@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use crate::{
     TimestampMs,
-    adapter::{claude, codex, cursor},
+    adapter::{claude, codex, cursor, kimi},
     utc_now,
 };
 
@@ -20,14 +20,28 @@ pub(super) fn snapshot(agent: &str, offline: bool) -> Option<Value> {
         "claude" => {
             let limits = claude::usage_limits(offline)?;
             let window = limits.seven_day?;
-            let now = utc_now();
-            let mut weekly = reading(agent, window.utilization, 10080, window.resets_at?, now)?;
-            if let Some(session) = limits.five_hour.and_then(|session| {
-                reading(agent, session.utilization, 300, session.resets_at?, now)
-            }) {
-                weekly["sessionWindow"] = session["window"].clone();
-            }
-            return Some(weekly);
+            let session = limits
+                .five_hour
+                .and_then(|session| Some((session.utilization, session.resets_at?)));
+            return with_session(
+                agent,
+                (window.utilization, 10080, window.resets_at?),
+                session,
+                utc_now(),
+            );
+        }
+        "kimi" => {
+            let limits = kimi::usage_limits(offline)?;
+            let (window, minutes) = limits.primary_window()?;
+            let session = limits
+                .five_hour
+                .and_then(|session| Some((session.used_percent, session.resets_at?)));
+            return with_session(
+                agent,
+                (window.used_percent, minutes, window.resets_at?),
+                session,
+                utc_now(),
+            );
         }
         "cursor" => {
             let account = cursor::load_account(offline)?;
@@ -47,6 +61,20 @@ pub(super) fn cursor_snapshot(offline: bool) -> Value {
             "observedAt": utc_now().as_millis(),
         })
     })
+}
+
+/// A main-window reading plus, when live, the 5-hour session window as `sessionWindow`.
+fn with_session(
+    agent: &str,
+    (used, minutes, reset): (f64, u64, TimestampMs),
+    session: Option<(f64, TimestampMs)>,
+    now: TimestampMs,
+) -> Option<Value> {
+    let mut output = reading(agent, used, minutes, reset, now)?;
+    if let Some(session) = session.and_then(|(used, reset)| reading(agent, used, 300, reset, now)) {
+        output["sessionWindow"] = session["window"].clone();
+    }
+    Some(output)
 }
 
 fn reading(
@@ -92,6 +120,36 @@ mod tests {
         let output = reading("codex", 14.0, 10080, reset, now).unwrap();
         assert_eq!(output["observedAt"], now.as_millis());
         assert_eq!(output["window"]["usedPercent"], 14.0);
+    }
+
+    #[test]
+    fn monthly_kimi_window_carries_the_five_hour_session_window() {
+        let now = TimestampMs::from_unix_seconds(1_800_000_000).unwrap();
+        let reset = now.checked_add_millis(10 * 86_400_000).unwrap();
+        let session_reset = now.checked_add_millis(3 * 3_600_000).unwrap();
+        let output = with_session(
+            "kimi",
+            (25.0, 30 * 1440, reset),
+            Some((46.0, session_reset)),
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(output["agent"], "kimi");
+        assert_eq!(output["window"]["windowMinutes"], 43200);
+        assert_eq!(output["window"]["usedPercent"], 25.0);
+        assert_eq!(output["sessionWindow"]["windowMinutes"], 300);
+        assert_eq!(output["sessionWindow"]["usedPercent"], 46.0);
+        assert_eq!(output["sessionWindow"]["elapsedPercent"], 40.0);
+    }
+
+    #[test]
+    fn expired_session_window_is_left_out() {
+        let now = TimestampMs::from_unix_seconds(1_800_000_000).unwrap();
+        let reset = now.checked_add_millis(86_400_000).unwrap();
+        let output = with_session("kimi", (12.0, 10080, reset), Some((5.0, now)), now).unwrap();
+
+        assert!(output.get("sessionWindow").is_none());
     }
 
     #[test]

@@ -13,9 +13,22 @@ use crate::{
     json_value_u64, missing_pricing_model_for_candidates, non_empty_json_string,
 };
 
+use super::{
+    config::KimiConfig,
+    paths::{WireFile, WireLayout},
+};
+
 const DEFAULT_MODEL: &str = "kimi-for-coding";
+const HIGHSPEED_MODEL: &str = "kimi-for-coding-highspeed";
+const K3_MODEL: &str = "k3";
 const DEFAULT_PROVIDER: &str = "moonshot";
 const KIMI_FOR_CODING_K2_6_CUTOFF_MS: i64 = 1_776_698_890_072;
+/// Kimi Code's coding-plan models have no LiteLLM key; price them as the
+/// public Kimi K2.7 Code API model (an API-equivalent estimate).
+const KIMI_CODE_PLAN_PRICING_MODEL: &str = "moonshot/kimi-k2.7-code";
+/// The highspeed tier bills at 2x K2.7 Code (LiteLLM `tencent/kimi-k2.7-code-highspeed`).
+const HIGHSPEED_PRICING_MODEL: &str = "moonshot/kimi-k2.7-code-highspeed";
+const K3_PRICING_MODEL: &str = "moonshot/kimi-k3";
 
 #[derive(Debug, Clone)]
 pub(super) struct KimiUsageEntry {
@@ -29,6 +42,7 @@ pub(super) struct KimiUsageEntry {
     cache_creation_tokens: u64,
     cache_read_tokens: u64,
     extra_total_tokens: u64,
+    layout: WireLayout,
 }
 
 pub(super) fn read_wire_file(path: &Path) -> Result<Vec<KimiUsageEntry>> {
@@ -41,6 +55,108 @@ pub(super) fn read_wire_file(path: &Path) -> Result<Vec<KimiUsageEntry>> {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter_map(|value| wire_line_to_entry(&value, path, &model, fallback_timestamp))
         .collect::<Vec<_>>())
+}
+
+/// Read Kimi Code `usage.record` lines: one per LLM request, each a delta
+/// (both `turn` and `session` scopes), so every record is summed. A fork copies
+/// the source wire and then appends a `forked` marker, so only records after
+/// the last marker belong to this file. `step.end` usage repeats the same
+/// request and is ignored.
+pub(super) fn read_kimi_code_wire_file(
+    file: &WireFile,
+    config: &KimiConfig,
+) -> Result<Vec<KimiUsageEntry>> {
+    let fallback_timestamp = file_modified_timestamp(&file.path);
+    let content = fs::read_to_string(&file.path)?;
+    let lines = content.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .rposition(|line| is_forked_marker(line))
+        .map_or(0, |index| index + 1);
+    let session_id = kimi_code_session_id(&file.path);
+    let agent_id = kimi_code_agent_id(&file.path);
+    Ok(lines
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter(|(_, line)| line.contains("\"usage.record\""))
+        .filter_map(|(index, line)| {
+            let value = serde_json::from_str::<Value>(line).ok()?;
+            usage_record_to_entry(
+                &value,
+                config,
+                &session_id,
+                format!("{agent_id}:{}", index + 1),
+                fallback_timestamp,
+            )
+        })
+        .collect())
+}
+
+fn is_forked_marker(line: &str) -> bool {
+    line.contains("\"forked\"")
+        && serde_json::from_str::<Value>(line)
+            .ok()
+            .is_some_and(|value| value.get("type").and_then(Value::as_str) == Some("forked"))
+}
+
+fn usage_record_to_entry(
+    value: &Value,
+    config: &KimiConfig,
+    session_id: &str,
+    record_id: String,
+    fallback_timestamp: TimestampMs,
+) -> Option<KimiUsageEntry> {
+    if value.get("type").and_then(Value::as_str) != Some("usage.record") {
+        return None;
+    }
+    let usage = value.get("usage")?;
+    let input_tokens = json_value_u64(usage.get("inputOther"));
+    let output_tokens = json_value_u64(usage.get("output"));
+    let cache_read_tokens = json_value_u64(usage.get("inputCacheRead"));
+    let cache_creation_tokens = json_value_u64(usage.get("inputCacheCreation"));
+    if input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens == 0 {
+        return None;
+    }
+    let model = non_empty_json_string(value.get("model")).map_or_else(
+        || DEFAULT_MODEL.to_string(),
+        |alias| config.model_for_alias(&alias),
+    );
+    let timestamp = value
+        .get("time")
+        .and_then(Value::as_i64)
+        .map(TimestampMs::from_millis)
+        .unwrap_or(fallback_timestamp);
+    Some(KimiUsageEntry {
+        timestamp,
+        timestamp_text: crate::format_rfc3339_millis(timestamp),
+        session_id: session_id.to_string(),
+        model,
+        message_id: Some(record_id),
+        input_tokens,
+        output_tokens,
+        cache_creation_tokens,
+        cache_read_tokens,
+        extra_total_tokens: 0,
+        layout: WireLayout::KimiCode,
+    })
+}
+
+/// `sessions/<workDirKey>/<session>/agents/<agentId>/wire.jsonl` → `<session>`,
+/// so sub-agent usage rolls up into its parent session.
+fn kimi_code_session_id(file_path: &Path) -> String {
+    file_path
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn kimi_code_agent_id(file_path: &Path) -> String {
+    extract_session_id(file_path)
 }
 
 fn read_model_from_config(file_path: &Path) -> String {
@@ -123,6 +239,7 @@ fn wire_line_to_entry(
         cache_creation_tokens: usage.cache_creation_input_tokens,
         cache_read_tokens: usage.cache_read_input_tokens,
         extra_total_tokens,
+        layout: WireLayout::Legacy,
     })
 }
 
@@ -253,8 +370,8 @@ fn missing_kimi_pricing(
 
 fn model_candidates(entry: &KimiUsageEntry) -> Vec<String> {
     let mut candidates = Vec::new();
-    if entry.model == DEFAULT_MODEL {
-        candidates.push(kimi_for_coding_pricing_model(entry.timestamp).to_string());
+    if let Some(model) = coding_plan_pricing_model(entry) {
+        candidates.push(model.to_string());
     }
     candidates.extend([
         format!("{DEFAULT_PROVIDER}/{}", entry.model),
@@ -264,6 +381,27 @@ fn model_candidates(entry: &KimiUsageEntry) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.clone()));
     candidates
+}
+
+/// Pricing stand-ins for Kimi's coding-plan model ids, which are not API model
+/// names. The legacy kimi-cli keeps its K2.5/K2.6 cutoff; Kimi Code's plan
+/// models price as K2.7 Code.
+fn coding_plan_pricing_model(entry: &KimiUsageEntry) -> Option<&'static str> {
+    match (entry.model.as_str(), entry.layout) {
+        (DEFAULT_MODEL, WireLayout::Legacy) => Some(kimi_for_coding_pricing_model(entry.timestamp)),
+        (model, _) => plan_pricing_model(model),
+    }
+}
+
+/// Kimi Code's pricing stand-in for a plan model id, also used to split
+/// aggregate spend into token classes (`spendMix`) where no timestamp is known.
+pub(crate) fn plan_pricing_model(model: &str) -> Option<&'static str> {
+    match model {
+        DEFAULT_MODEL => Some(KIMI_CODE_PLAN_PRICING_MODEL),
+        HIGHSPEED_MODEL => Some(HIGHSPEED_PRICING_MODEL),
+        K3_MODEL => Some(K3_PRICING_MODEL),
+        _ => None,
+    }
 }
 
 fn kimi_for_coding_pricing_model(timestamp: TimestampMs) -> &'static str {
@@ -325,6 +463,7 @@ mod tests {
             cache_creation_tokens: usage.cache_creation_input_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
             extra_total_tokens: 0,
+            layout: WireLayout::Legacy,
         };
         let at_cutoff = KimiUsageEntry {
             timestamp: TimestampMs::from_millis(1_776_698_890_072),

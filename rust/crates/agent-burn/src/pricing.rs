@@ -810,6 +810,56 @@ impl PricingMap {
                 fast_multiplier: 1.0,
             },
         );
+        // Source: https://platform.kimi.ai/docs/pricing/chat-k27-code
+        // (LiteLLM `moonshot/kimi-k2.7-code`; cache writes follow the K2.5/K2.6 1.25x input convention)
+        self.entries.insert(
+            "moonshot/kimi-k2.7-code".to_string(),
+            Pricing {
+                input: 0.95e-6,
+                output: 4e-6,
+                cache_create: 1.1875e-6,
+                cache_read: 0.19e-6,
+                cache_read_explicit: true,
+                input_above_200k: None,
+                output_above_200k: None,
+                cache_create_above_200k: None,
+                cache_read_above_200k: None,
+                fast_multiplier: 1.0,
+            },
+        );
+        // Kimi Code's `kimi-for-coding-highspeed` tier has no Moonshot list price;
+        // source: LiteLLM `tencent/kimi-k2.7-code-highspeed` (2x K2.7 Code).
+        self.entries.insert(
+            "moonshot/kimi-k2.7-code-highspeed".to_string(),
+            Pricing {
+                input: 1.9e-6,
+                output: 8e-6,
+                cache_create: 2.375e-6,
+                cache_read: 0.38e-6,
+                cache_read_explicit: true,
+                input_above_200k: None,
+                output_above_200k: None,
+                cache_create_above_200k: None,
+                cache_read_above_200k: None,
+                fast_multiplier: 1.0,
+            },
+        );
+        // Source: https://platform.kimi.ai/docs/pricing/chat-k3 (LiteLLM `moonshot/kimi-k3`)
+        self.entries.insert(
+            "moonshot/kimi-k3".to_string(),
+            Pricing {
+                input: 3e-6,
+                output: 15e-6,
+                cache_create: 3.75e-6,
+                cache_read: 0.3e-6,
+                cache_read_explicit: true,
+                input_above_200k: None,
+                output_above_200k: None,
+                cache_create_above_200k: None,
+                cache_read_above_200k: None,
+                fast_multiplier: 1.0,
+            },
+        );
         let gpt_5_1_pricing = Pricing {
             input: 1.25e-6,
             output: 10e-6,
@@ -980,6 +1030,12 @@ impl PricingMap {
             .insert("moonshot/kimi-k2.5".to_string(), 262_144);
         self.context_limits
             .insert("moonshot/kimi-k2.6".to_string(), 262_144);
+        self.context_limits
+            .insert("moonshot/kimi-k2.7-code".to_string(), 262_144);
+        self.context_limits
+            .insert("moonshot/kimi-k2.7-code-highspeed".to_string(), 262_144);
+        self.context_limits
+            .insert("moonshot/kimi-k3".to_string(), 1_048_576);
 
         for model in [
             "claude-opus-4-5",
@@ -1276,6 +1332,28 @@ mod tests {
         assert!(kimi_k26.cache_read_explicit);
         assert_eq!(pricing.context_limit("moonshot/kimi-k2.5"), Some(262_144));
         assert_eq!(pricing.context_limit("moonshot/kimi-k2.6"), Some(262_144));
+        let kimi_k27_code = pricing.find("moonshot/kimi-k2.7-code").unwrap();
+        let kimi_k3 = pricing.find("moonshot/kimi-k3").unwrap();
+        assert_eq!(kimi_k27_code.input, 0.95e-6);
+        assert_eq!(kimi_k27_code.output, 4e-6);
+        assert_eq!(kimi_k27_code.cache_read, 0.19e-6);
+        assert_eq!(kimi_k3.input, 3e-6);
+        assert_eq!(kimi_k3.output, 15e-6);
+        assert_eq!(kimi_k3.cache_read, 0.3e-6);
+        assert_eq!(
+            pricing.context_limit("moonshot/kimi-k2.7-code"),
+            Some(262_144)
+        );
+        assert_eq!(pricing.context_limit("moonshot/kimi-k3"), Some(1_048_576));
+        let highspeed = pricing.find("moonshot/kimi-k2.7-code-highspeed").unwrap();
+        assert_eq!(highspeed.input, 1.9e-6);
+        assert_eq!(highspeed.output, 8e-6);
+        assert_eq!(highspeed.cache_create, 2.375e-6);
+        assert_eq!(highspeed.cache_read, 0.38e-6);
+        assert_eq!(
+            pricing.context_limit("moonshot/kimi-k2.7-code-highspeed"),
+            Some(262_144)
+        );
     }
 
     #[test]

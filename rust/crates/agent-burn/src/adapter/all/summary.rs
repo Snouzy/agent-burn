@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::{
     Color, IsoDate, MILLIS_PER_DAY, ModelBreakdown, PricingMap, Result, TimestampMs,
-    adapter::{claude, codex, cursor},
+    adapter::{claude, codex, cursor, kimi},
     cli::{AgentReportKind, SharedArgs, SummaryArgs, SummaryRange, WeekDay},
     cost::tiered_cost,
     fast::FxHashMap,
@@ -109,6 +109,12 @@ pub(super) fn run(args: SummaryArgs) -> Result<()> {
             && let Some(account) = claude::load_account(shared.offline)
         {
             output["claudeAccount"] = account;
+        }
+        if value
+            && (shared.agents.is_empty() || shared.agents.iter().any(|agent| agent == "kimi"))
+            && let Some(account) = kimi::load_account(shared.offline)
+        {
+            output["kimiAccount"] = account;
         }
         if let (Some(object), Some(subscription)) = (output.as_object_mut(), subscription.as_ref())
         {
@@ -230,8 +236,8 @@ fn run_harness_weekly(
     let result = loader::load_rows(AgentReportKind::Daily, &selected)?;
     let rows = &result.rows;
 
-    let (plan_name, price, window, live_limits, reset_credits_available) = if agent == "codex" {
-        match codex_input(rows, shared.offline) {
+    let (plan_name, price, window, live_limits, reset_credits_available) = match agent {
+        "codex" => match codex_input(rows, shared.offline) {
             Some(input) => {
                 let (name, price) = subscription::resolve_codex(&input.plan_type, codex_spec);
                 (
@@ -243,13 +249,19 @@ fn run_harness_weekly(
                 )
             }
             None => (None, None, None, false, None),
-        }
-    } else {
-        let tier = claude::detected_plan_tier();
-        let (name, price) = subscription::resolve_claude(tier.as_deref(), claude_spec);
-        match claude_input(rows, shared.offline) {
-            Some(input) => (name, price, input.window, true, None),
-            None => (name, price, None, false, None),
+        },
+        // Kimi Code exposes no plan name or price, only live quota windows.
+        "kimi" => match kimi_window(rows, shared.offline) {
+            Some(window) => (None, None, window, true, None),
+            None => (None, None, None, false, None),
+        },
+        _ => {
+            let tier = claude::detected_plan_tier();
+            let (name, price) = subscription::resolve_claude(tier.as_deref(), claude_spec);
+            match claude_input(rows, shared.offline) {
+                Some(input) => (name, price, input.window, true, None),
+                None => (name, price, None, false, None),
+            }
         }
     };
 
@@ -492,7 +504,13 @@ fn estimated_model_category_costs(
     model: &ModelBreakdown,
     pricing: &PricingMap,
 ) -> CategoryCosts {
-    let Some(model_pricing) = pricing.find(&model.model_name) else {
+    let model_pricing = pricing.find(&model.model_name).or_else(|| {
+        (agent == "kimi")
+            .then(|| kimi::plan_pricing_model(&model.model_name))
+            .flatten()
+            .and_then(|key| pricing.find(key))
+    });
+    let Some(model_pricing) = model_pricing else {
         return CategoryCosts::default();
     };
     let mut multiplier = if model.model_name.ends_with("-fast") {
@@ -642,6 +660,19 @@ fn claude_input(rows: &[AllRow], offline: bool) -> Option<ClaudeInput> {
             .five_hour
             .map(|five_hour| (5 * 60, five_hour.utilization)),
     })
+}
+
+/// Fetch Kimi Code's live quota and measure spend over its main window (weekly
+/// on legacy plans, else the calendar month before the monthly reset). The
+/// outer `None` means no live quota; the inner one, no usable window.
+fn kimi_window(rows: &[AllRow], offline: bool) -> Option<Option<WindowCost>> {
+    let limits = kimi::usage_limits(offline)?;
+    Some(limits.primary_window().and_then(|(window, minutes)| {
+        let window_start = window
+            .resets_at?
+            .checked_sub_millis(i64::try_from(minutes).ok()? * 60_000)?;
+        window_cost(window.used_percent, minutes, window_start, rows, "kimi")
+    }))
 }
 
 /// Build a window-cost reading: API-equivalent spend over `[window_start, now]`
@@ -1095,6 +1126,7 @@ fn family_color(name: &str) -> Color {
     } else if name.contains("cursor") || name.contains("composer") || name.contains("grok") {
         Color::Red
     } else {
+        // Kimi / Moonshot and every other family.
         Color::Cyan
     }
 }
@@ -1107,6 +1139,7 @@ fn agent_color(agent: &str) -> Color {
         "cursor" => Color::Red,
         "gemini" => Color::Blue,
         "droid" => Color::Yellow,
+        "kimi" => Color::Cyan,
         _ => Color::Cyan,
     }
 }
@@ -1451,6 +1484,46 @@ mod tests {
         assert_eq!(mix[3].key, "cacheRead");
         assert_eq!(mix[3].tokens, 50);
         assert!((mix[3].cost - 25.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn kimi_spend_mix_prices_plan_models_through_their_stand_in() {
+        let pricing = PricingMap::load_embedded();
+        // 200k input @ 0.95e-6 + 30k output @ 4e-6 + 900k cache read @ 0.19e-6.
+        let agent = AllRow {
+            period: "2026-01-01".to_string(),
+            agent: "kimi",
+            models_used: vec!["kimi-for-coding".to_string()],
+            input_tokens: 200_000,
+            output_tokens: 30_000,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 900_000,
+            total_tokens: 1_130_000,
+            total_cost: 0.481,
+            metadata: None,
+            metadata_agents: Some(vec!["kimi"]),
+            agent_breakdowns: None,
+            model_breakdowns: vec![model_token_breakdown(
+                "kimi-for-coding",
+                200_000,
+                30_000,
+                0,
+                900_000,
+                0.481,
+            )],
+        };
+        let rows = vec![day_row(0.481, 1_130_000, vec![agent], Vec::new())];
+
+        let mix = agent_spend_mix_since(&rows, "2026-01-01", "kimi", &pricing);
+
+        let costs = mix
+            .iter()
+            .map(|item| (item.key, (item.cost * 1000.0).round() / 1000.0))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            costs,
+            vec![("input", 0.19), ("output", 0.12), ("cacheRead", 0.171)]
+        );
     }
 
     #[test]

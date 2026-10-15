@@ -5,7 +5,7 @@ expression: "help_text_for_args(&[\"agent-burn\".to_string(), \"harness\".to_str
 Focused weekly rate-limit detail for one harness: limit used vs time elapsed, value extrapolation, and a day-by-day breakdown.
 
 USAGE:
-  agent-burn harness <codex|claude> <OPTIONS>
+  agent-burn harness <codex|claude|kimi> <OPTIONS>
 
 OPTIONS:
   -j, --json                           Output in JSON format (default: false)
