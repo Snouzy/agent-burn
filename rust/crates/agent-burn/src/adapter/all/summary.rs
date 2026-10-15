@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod detail;
+mod projects;
 
 use serde_json::{Value, json};
 
@@ -98,6 +99,7 @@ pub(super) fn run(args: SummaryArgs) -> Result<()> {
 
     if wants_json(&shared) {
         let mut output = detail::to_json(&summary, &result.rows);
+        output["projects"] = projects::projects_json(&result.rows);
         if value
             && (shared.agents.is_empty() || shared.agents.iter().any(|agent| agent == "cursor"))
             && let Some(account) = cursor::load_account(shared.offline)
