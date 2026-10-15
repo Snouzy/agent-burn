@@ -214,3 +214,20 @@ private func snapshot(_ days: String) throws -> SummaryReport {
   #expect(store.summary?.totals.totalTokens == 200)
   #expect(store.knownAgents == ["cursor"])
 }
+
+@Test func archiveReportKeepsLiveProjects() throws {
+  var archive = MetricsArchive()
+  var live = try snapshot(
+    """
+    {"date":"2026-09-01","cost":10,"tokens":100}
+    """)
+  live.projects = [
+    ProjectUsage(
+      name: "agent-burn", path: "/Users/x/agent-burn", totalCost: 10, totalTokens: 100,
+      percentage: 100,
+      agents: [ProjectAgentUsage(agent: "cursor", totalCost: 10, totalTokens: 100)])
+  ]
+  archive.ingest(live)
+  #expect(archive.report(period: .all, live: live).projects == live.projects)
+  #expect(archive.report(period: .all, live: nil).projects == nil)
+}

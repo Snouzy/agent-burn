@@ -3,14 +3,17 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read},
     path::Path,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
 };
 
 use memchr::memmem::Finder;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{CodexRawUsage, CodexTokenUsageEvent, Result, TimestampMs};
+use crate::{
+    CodexRawUsage, CodexTokenUsageEvent, Result, TimestampMs, project_root::TurnRepositories,
+    touched_paths,
+};
 
 use super::types::{
     CodexInfo, CodexLogEntry, CodexModelMetadata, CodexPayload, CodexResultFields,
@@ -32,6 +35,12 @@ static INPUT_TOKENS_FIELD_FINDER: LazyLock<Finder<'static>> =
     LazyLock::new(|| Finder::new(br#""input_tokens":"#));
 static PROMPT_TOKENS_FIELD_FINDER: LazyLock<Finder<'static>> =
     LazyLock::new(|| Finder::new(br#""prompt_tokens":"#));
+static RESPONSE_ITEM_TYPE_FINDER: LazyLock<Finder<'static>> =
+    LazyLock::new(|| Finder::new(br#""type":"response_item""#));
+static FUNCTION_CALL_TYPE_FINDER: LazyLock<Finder<'static>> =
+    LazyLock::new(|| Finder::new(br#""type":"function_call""#));
+static CUSTOM_TOOL_CALL_TYPE_FINDER: LazyLock<Finder<'static>> =
+    LazyLock::new(|| Finder::new(br#""type":"custom_tool_call""#));
 static THREAD_SPAWN_FINDER: LazyLock<Finder<'static>> =
     LazyLock::new(|| Finder::new(b"thread_spawn"));
 
@@ -136,7 +145,7 @@ fn detect_subagent_replay_second(path: &Path) -> Option<[u8; 19]> {
 pub(super) fn visit_codex_session_file(
     sessions_dir: &Path,
     path: &Path,
-    mut visit: impl FnMut(CodexTokenUsageEvent) -> Result<()>,
+    visit: impl FnMut(CodexTokenUsageEvent) -> Result<()>,
 ) -> Result<()> {
     let is_subagent = is_codex_subagent_session(path);
     let replay_second = is_subagent
@@ -151,8 +160,14 @@ pub(super) fn visit_codex_session_file(
     let mut previous_totals: Option<CodexRawUsage> = None;
     let mut current_model: Option<String> = None;
     let mut current_model_is_fallback = false;
+    let mut current_cwd: Option<Arc<str>> = None;
     let fallback_timestamp = file_modified_timestamp(path);
     let mut skip_replay = replay_second.is_some();
+    // Events are buffered per file so turns before the first touched
+    // repository can be attributed to it.
+    let mut events = Vec::new();
+    let mut unattributed = Vec::new();
+    let mut turns = TurnRepositories::default();
 
     loop {
         line.clear();
@@ -161,6 +176,10 @@ pub(super) fn visit_codex_session_file(
         };
         if bytes_read == 0 {
             break;
+        }
+        if is_codex_tool_call(&line) {
+            touch_tool_call_paths(&mut turns, &line, current_cwd.as_deref());
+            continue;
         }
         let Some(line_kind) = codex_line_usage_kind(&line) else {
             continue;
@@ -199,14 +218,25 @@ pub(super) fn visit_codex_session_file(
                     }
                     skip_replay = false;
                 }
+                let before = events.len();
                 visit_codex_session_entry(
                     &session_id,
                     value,
                     &mut previous_totals,
                     &mut current_model,
                     &mut current_model_is_fallback,
-                    &mut visit,
+                    &mut current_cwd,
+                    &mut |event| {
+                        events.push(event);
+                        Ok(())
+                    },
                 )?;
+                for (index, event) in events.iter_mut().enumerate().skip(before) {
+                    match turns.finish_turn().1 {
+                        Some(repository) => event.cwd = Some(repository),
+                        None => unattributed.push(index),
+                    }
+                }
             }
             CodexLineKind::Headless => {
                 if let Ok(value) = serde_json::from_slice::<CodexLogEntry<'_>>(&line) {
@@ -216,7 +246,10 @@ pub(super) fn visit_codex_session_file(
                         &fallback_timestamp,
                         &mut current_model,
                         &mut current_model_is_fallback,
-                        &mut visit,
+                        &mut |event| {
+                            events.push(event);
+                            Ok(())
+                        },
                     )?;
                 } else {
                     add_codex_exec_event_from_value(
@@ -225,14 +258,49 @@ pub(super) fn visit_codex_session_file(
                         &fallback_timestamp,
                         &mut current_model,
                         &mut current_model_is_fallback,
-                        &mut visit,
+                        &mut |event| {
+                            events.push(event);
+                            Ok(())
+                        },
                     )?;
                 };
             }
         }
     }
 
-    Ok(())
+    if let Some(first) = turns.first() {
+        for index in unattributed {
+            events[index].cwd = Some(Arc::clone(first));
+        }
+    }
+    events.into_iter().try_for_each(visit)
+}
+
+/// Item and payload types sit at the start of the line, so only that prefix is
+/// searched; response items can be very large.
+fn is_codex_tool_call(line: &[u8]) -> bool {
+    let head = &line[..line.len().min(256)];
+    RESPONSE_ITEM_TYPE_FINDER.find(head).is_some()
+        && (FUNCTION_CALL_TYPE_FINDER.find(head).is_some()
+            || CUSTOM_TOOL_CALL_TYPE_FINDER.find(head).is_some())
+}
+
+/// Records the repositories a tool call works in: its `workdir` and the files
+/// its `apply_patch` headers name, relative ones resolved against the workdir
+/// or else the turn's cwd.
+fn touch_tool_call_paths(turns: &mut TurnRepositories, line: &[u8], cwd: Option<&str>) {
+    let mut workdir = None;
+    for path in touched_paths::key_paths(line, "workdir") {
+        workdir.get_or_insert(path);
+        turns.touch(path);
+    }
+    for path in touched_paths::patch_paths(line) {
+        if path.starts_with('/') {
+            turns.touch(path);
+        } else if let Some(base) = workdir.or(cwd) {
+            turns.touch(&format!("{base}/{path}"));
+        }
+    }
 }
 
 fn visit_codex_session_entry(
@@ -241,6 +309,7 @@ fn visit_codex_session_entry(
     previous_totals: &mut Option<CodexRawUsage>,
     current_model: &mut Option<String>,
     current_model_is_fallback: &mut bool,
+    current_cwd: &mut Option<Arc<str>>,
     visit: &mut impl FnMut(CodexTokenUsageEvent) -> Result<()>,
 ) -> Result<()> {
     let entry_type = value.entry_type.as_deref();
@@ -248,6 +317,11 @@ fn visit_codex_session_entry(
         if let Some(model) = value.payload.as_ref().and_then(codex_model_from_payload) {
             *current_model = Some(model);
             *current_model_is_fallback = false;
+        }
+        if let Some(cwd) = value.payload.as_ref().and_then(|p| p.cwd.as_deref())
+            && current_cwd.as_deref() != Some(cwd)
+        {
+            *current_cwd = Some(Arc::from(cwd));
         }
         return Ok(());
     }
@@ -299,6 +373,7 @@ fn visit_codex_session_entry(
         session_id: session_id.to_string(),
         timestamp,
         model,
+        cwd: current_cwd.clone(),
         input_tokens: raw_usage.input_tokens,
         cached_input_tokens: raw_usage.cached_input_tokens.min(raw_usage.input_tokens),
         output_tokens: raw_usage.output_tokens,
@@ -387,6 +462,7 @@ fn visit_codex_exec_usage_event(
         session_id: session_id.to_string(),
         timestamp: timestamps.event,
         model,
+        cwd: None,
         input_tokens: raw_usage.input_tokens,
         cached_input_tokens: raw_usage.cached_input_tokens.min(raw_usage.input_tokens),
         output_tokens: raw_usage.output_tokens,

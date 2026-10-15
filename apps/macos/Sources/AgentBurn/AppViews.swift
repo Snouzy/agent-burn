@@ -25,7 +25,7 @@ struct MenuPopover: View {
         .padding(.horizontal, 14).padding(.bottom, 14)
       ScrollView {
         Group {
-          if tab == "summary" {
+          if store.selectedHarness == nil {
             OverviewView()
           } else if harnessAgents.contains(tab) {
             HarnessView(agent: tab, compact: true)
@@ -160,17 +160,23 @@ struct DashboardView: View {
     } detail: {
       VStack(spacing: 0) {
         ScrollView {
-          NativeUsageView(agent: store.selection == "summary" ? nil : store.selection)
-            .id(store.selection)
-            .transition(.opacity.combined(with: .offset(y: 8)))
-            .padding(24).frame(maxWidth: 1280).frame(maxWidth: .infinity)
+          Group {
+            if store.selection == "projects" {
+              ProjectsView()
+            } else {
+              NativeUsageView(agent: store.selectedHarness)
+            }
+          }
+          .id(store.selection)
+          .transition(.opacity.combined(with: .offset(y: 8)))
+          .padding(24).frame(maxWidth: 1280).frame(maxWidth: .infinity)
         }
         .animation(.smooth(duration: 0.3), value: store.selection)
         Divider()
         RefreshFooter(source: "summary").padding(.horizontal, 20).padding(.vertical, 9)
       }
       .background(BurnTheme.background)
-      .navigationTitle(store.selection == "summary" ? "Overview" : harnessName(store.selection))
+      .navigationTitle(dashboardTitle(store.selection))
       .navigationSubtitle(store.period.label)
     }
     .frame(minWidth: 980, minHeight: 650)
@@ -192,6 +198,14 @@ struct DashboardView: View {
   }
 }
 
+private func dashboardTitle(_ selection: String) -> String {
+  switch selection {
+  case "summary": "Overview"
+  case "projects": "Projects"
+  default: harnessName(selection)
+  }
+}
+
 private struct DashboardSidebar: View {
   @Environment(UsageStore.self) private var store
   private let subscriptions = ["codex", "claude", "kimi", "cursor"]
@@ -208,6 +222,14 @@ private struct DashboardSidebar: View {
         IconBadge(symbol: "flame.fill", size: 20)
       } trailing: {
         spend(store.summary?.totals.totalCost)
+      }
+      row(id: "projects", title: "Projects") {
+        IconBadge(symbol: "folder.fill", size: 20)
+      } trailing: {
+        if let count = store.summary?.projects.map({ ProjectsModel.repositories($0).count }) {
+          Text(count.formatted()).font(.system(size: 11)).monospacedDigit()
+            .foregroundStyle(.secondary)
+        }
       }
       Section("Subscriptions") {
         ForEach(subscriptions, id: \.self) { agent in

@@ -250,6 +250,7 @@ mod tests {
             }],
             project: None,
             versions: Some(vec!["1.0.0".to_string()]),
+            project_breakdowns: Vec::new(),
         }
     }
 

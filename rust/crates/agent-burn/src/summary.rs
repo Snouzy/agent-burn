@@ -107,6 +107,7 @@ impl UsageAccumulator {
             model_breakdowns: self.breakdowns,
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }
     }
 }
@@ -215,6 +216,7 @@ fn aggregate_summaries(rows: &[&UsageSummary]) -> UsageSummary {
         model_breakdowns: Vec::new(),
         project: None,
         versions: None,
+        project_breakdowns: Vec::new(),
     };
     let mut seen_models = FxHashSet::default();
     let mut breakdown_indexes = FxHashMap::<String, usize>::default();
@@ -680,6 +682,7 @@ mod tests {
             }],
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }
     }
 }

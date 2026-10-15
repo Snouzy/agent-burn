@@ -151,6 +151,7 @@ mod tests {
             session_id: session_id.to_string(),
             timestamp: "2026-01-02T00:00:00.000Z".to_string(),
             model: Some("gpt-5".to_string()),
+            cwd: None,
             input_tokens: 100,
             cached_input_tokens: 10,
             output_tokens: 50,

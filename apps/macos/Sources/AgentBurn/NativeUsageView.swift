@@ -82,6 +82,11 @@ struct NativeUsageView: View {
           if agent == nil { harnessList.frame(width: 300) }
         }
         .fixedSize(horizontal: false, vertical: true)
+        if agent == nil, store.hasPeriodDetails, let projects = store.summary?.projects,
+          !ProjectsModel.repositories(projects).isEmpty
+        {
+          TopProjectsCard(projects: projects)
+        }
         if store.hasPeriodDetails { modelSection }
         if agent == "cursor", store.period == .all, let recovered = store.recoveredCursor,
           let models = recovered.models

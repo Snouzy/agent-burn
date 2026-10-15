@@ -1,14 +1,21 @@
-use std::{collections::BTreeMap, sync::mpsc, thread};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, mpsc},
+    thread,
+};
 
 use serde_json::{Value, json};
 
 use crate::{
-    CodexGroup, LoadedEntry, ModelBreakdown, PricingMap, Result, SessionAccumulator, UsageSummary,
+    CodexGroup, LoadedEntry, ModelBreakdown, PricingMap, ProjectBreakdown, Result,
+    SessionAccumulator, UsageSummary,
     adapter::{
         amp, claude, codebuff, codex, copilot, cursor, droid, gemini, goose, hermes, kilo, kimi,
         openclaw, opencode, pi, qwen,
     },
     cli::{AgentReportKind, CodexSpeed, SharedArgs, WeekDay},
+    fast::FxHashMap,
     filter_loaded_entries_by_date, json_float,
 };
 
@@ -371,10 +378,48 @@ fn load_summary_agent_rows(
     let detected = !entries.is_empty();
     filter_loaded_entries_by_date(&mut entries, shared);
     let summaries = summarize_entries(&entries, kind)?;
-    Ok(AgentRows {
-        rows: summary_rows(agent, summaries),
-        detected,
-    })
+    let mut rows = summary_rows(agent, summaries);
+    if kind == AgentReportKind::Daily {
+        attach_entry_projects(&mut rows, &entries);
+    }
+    Ok(AgentRows { rows, detected })
+}
+
+/// Attributes daily rows to the entries' project paths. Adapters without a
+/// real working directory use a label such as "Kimi", which stays unattributed.
+fn attach_entry_projects(rows: &mut [AllRow], entries: &[LoadedEntry]) {
+    let unattributed: Arc<str> = Arc::from("");
+    let mut projects = FxHashMap::<&str, Vec<ProjectBreakdown>>::default();
+    for entry in entries {
+        let cwd = if Path::new(entry.project_path.as_ref()).is_absolute() {
+            &entry.project_path
+        } else {
+            &unattributed
+        };
+        let usage = entry.data.message.usage;
+        let tokens = usage.input_tokens
+            + usage.output_tokens
+            + usage.cache_creation_token_count()
+            + usage.cache_read_input_tokens
+            + entry.extra_total_tokens;
+        let day = projects.entry(entry.date.as_str()).or_default();
+        match day.iter_mut().find(|project| project.cwd == *cwd) {
+            Some(project) => {
+                project.total_tokens += tokens;
+                project.cost += entry.cost;
+            }
+            None => day.push(ProjectBreakdown {
+                cwd: Arc::clone(cwd),
+                total_tokens: tokens,
+                cost: entry.cost,
+            }),
+        }
+    }
+    for row in rows {
+        if let Some(day) = projects.remove(row.period.as_str()) {
+            row.project_breakdowns = day;
+        }
+    }
 }
 
 fn load_session_capable_summary_agent_rows(
@@ -399,10 +444,11 @@ fn load_session_capable_summary_agent_rows(
         filter_loaded_entries_by_date(&mut entries, shared);
         summarize_entries(&entries, kind)?
     };
-    Ok(AgentRows {
-        rows: summary_rows(agent, summaries),
-        detected,
-    })
+    let mut rows = summary_rows(agent, summaries);
+    if kind == AgentReportKind::Daily {
+        attach_entry_projects(&mut rows, &entries);
+    }
+    Ok(AgentRows { rows, detected })
 }
 
 fn load_claude_rows(kind: AgentReportKind, shared: &SharedArgs) -> Result<AgentRows> {
@@ -563,6 +609,7 @@ fn summary_rows(agent: &'static str, summaries: Vec<UsageSummary>) -> Vec<AllRow
                 metadata_agents: Some(vec![agent]),
                 agent_breakdowns: None,
                 model_breakdowns: summary.model_breakdowns,
+                project_breakdowns: summary.project_breakdowns,
             })
         })
         .collect()
@@ -632,6 +679,20 @@ pub(super) fn codex_group_row(
         metadata_agents: Some(vec!["codex"]),
         agent_breakdowns: None,
         model_breakdowns,
+        project_breakdowns: group
+            .projects
+            .iter()
+            .map(|(cwd, models)| ProjectBreakdown {
+                cwd: Arc::clone(cwd),
+                total_tokens: models.values().map(|usage| usage.total_tokens).sum(),
+                cost: models
+                    .iter()
+                    .map(|(model, usage)| {
+                        codex::calculate_codex_model_cost(model, usage, pricing, speed)
+                    })
+                    .sum(),
+            })
+            .collect(),
     }
 }
 
@@ -682,7 +743,86 @@ mod tests {
             model_breakdowns: Vec::new(),
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }
+    }
+
+    fn loaded_entry(date: &str, project_path: &str, input_tokens: u64, cost: f64) -> LoadedEntry {
+        LoadedEntry {
+            data: crate::UsageEntry {
+                session_id: None,
+                timestamp: format!("{date}T00:00:00.000Z"),
+                version: None,
+                message: crate::UsageMessage {
+                    usage: crate::TokenUsageRaw {
+                        input_tokens,
+                        output_tokens: 1,
+                        ..crate::TokenUsageRaw::default()
+                    },
+                    model: Some("kimi-k2".to_string()),
+                    id: None,
+                },
+                cost_usd: None,
+                request_id: None,
+                is_api_error_message: None,
+                is_sidechain: None,
+            },
+            timestamp: crate::TimestampMs::from_millis(0),
+            date: date.to_string(),
+            project: Arc::from("kimi"),
+            session_id: Arc::from("session"),
+            project_path: Arc::from(project_path),
+            cost,
+            extra_total_tokens: 0,
+            credits: None,
+            message_count: None,
+            model: Some("kimi-k2".to_string()),
+            usage_limit_reset_time: None,
+            missing_pricing_model: None,
+        }
+    }
+
+    fn project(cwd: &str, total_tokens: u64, cost: f64) -> ProjectBreakdown {
+        ProjectBreakdown {
+            cwd: cwd.into(),
+            total_tokens,
+            cost,
+        }
+    }
+
+    #[test]
+    fn attributes_daily_entry_usage_to_absolute_project_paths() {
+        let entries = vec![
+            loaded_entry("2026-01-02", "/dev/app", 9, 0.25),
+            loaded_entry("2026-01-02", "Kimi", 19, 0.5),
+            loaded_entry("2026-01-02", "/dev/app", 4, 0.125),
+            loaded_entry("2026-01-03", "/dev/web", 39, 1.0),
+        ];
+
+        let rows = load_summary_agent_rows(
+            "kimi",
+            AgentReportKind::Daily,
+            &SharedArgs::default(),
+            || Ok(entries),
+            kimi::summarize_entries,
+        )
+        .unwrap()
+        .rows;
+
+        let projects = rows
+            .iter()
+            .map(|row| (row.period.as_str(), row.project_breakdowns.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            projects,
+            vec![
+                (
+                    "2026-01-02",
+                    vec![project("/dev/app", 15, 0.375), project("", 20, 0.5)]
+                ),
+                ("2026-01-03", vec![project("/dev/web", 40, 1.0)]),
+            ]
+        );
     }
 
     #[test]

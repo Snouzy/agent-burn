@@ -343,6 +343,7 @@ mod tests {
                         metadata_agents: Some(vec![*agent]),
                         agent_breakdowns: None,
                         model_breakdowns: Vec::new(),
+                        project_breakdowns: Vec::new(),
                     })
                     .collect(),
             ),
@@ -355,6 +356,7 @@ mod tests {
                     ..ModelBreakdown::default()
                 })
                 .collect(),
+            project_breakdowns: Vec::new(),
         }
     }
 

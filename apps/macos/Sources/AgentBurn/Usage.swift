@@ -9,6 +9,7 @@ struct SummaryReport: Codable, Sendable {
   var cursorAccount: CursorAccount? = nil
   var claudeAccount: ClaudeAccount? = nil
   var kimiAccount: KimiAccount? = nil
+  var projects: [ProjectUsage]? = nil
 }
 
 struct Totals: Codable, Sendable {
@@ -23,6 +24,35 @@ struct AgentUsage: Codable, Identifiable, Sendable {
   let models: [ModelUsage]?
   let daily: [DailyUsage]?
   let tokenBreakdown: [String: UInt64]?
+  var id: String { agent }
+}
+
+enum ProjectKind: String, Sendable {
+  case repository, scratch, other
+}
+
+/// Spend grouped by Git repository. `path` is nil for the "Scratch" bucket of
+/// sessions outside any repository and the "Other" bucket of sessions that
+/// recorded no directory.
+struct ProjectUsage: Codable, Identifiable, Sendable, Equatable {
+  let name: String
+  let path: String?
+  let totalCost: Double
+  let totalTokens: UInt64
+  let percentage: Double
+  let agents: [ProjectAgentUsage]
+  var kind: String? = nil
+  // Reports from before `kind` only had repositories and "Other".
+  var category: ProjectKind {
+    kind.flatMap(ProjectKind.init) ?? (path == nil ? .other : .repository)
+  }
+  var id: String { path ?? category.rawValue }
+}
+
+struct ProjectAgentUsage: Codable, Identifiable, Sendable, Equatable {
+  let agent: String
+  let totalCost: Double
+  let totalTokens: UInt64
   var id: String { agent }
 }
 

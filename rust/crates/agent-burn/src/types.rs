@@ -105,6 +105,15 @@ pub(crate) struct ModelBreakdown {
     pub(crate) missing_pricing: bool,
 }
 
+/// Usage attributed to the working directory a session ran in. An empty `cwd`
+/// collects usage the source could not attribute.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectBreakdown {
+    pub(crate) cwd: Arc<str>,
+    pub(crate) total_tokens: u64,
+    pub(crate) cost: f64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedEntry {
     pub(crate) data: UsageEntry,
@@ -142,6 +151,8 @@ pub(crate) struct CodexTokenUsageEvent {
     pub(crate) session_id: String,
     pub(crate) timestamp: String,
     pub(crate) model: Option<String>,
+    /// Working directory from the latest `turn_context`; headless exec usage has none.
+    pub(crate) cwd: Option<Arc<str>>,
     pub(crate) input_tokens: u64,
     pub(crate) cached_input_tokens: u64,
     pub(crate) output_tokens: u64,
@@ -168,6 +179,8 @@ pub(crate) struct CodexGroup {
     pub(crate) reasoning_output_tokens: u64,
     pub(crate) total_tokens: u64,
     pub(crate) models: BTreeMap<String, CodexModelUsage>,
+    /// Per-model usage keyed by session cwd; the empty key is unattributed.
+    pub(crate) projects: BTreeMap<Arc<str>, BTreeMap<String, CodexModelUsage>>,
     pub(crate) last_activity: Option<String>,
 }
 
@@ -204,6 +217,8 @@ pub(crate) struct UsageSummary {
     pub(crate) project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) versions: Option<Vec<String>>,
+    #[serde(skip)]
+    pub(crate) project_breakdowns: Vec<ProjectBreakdown>,
 }
 
 impl UsageSummary {

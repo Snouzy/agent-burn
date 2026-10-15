@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod detail;
+mod projects;
 
 use serde_json::{Value, json};
 
@@ -98,6 +99,7 @@ pub(super) fn run(args: SummaryArgs) -> Result<()> {
 
     if wants_json(&shared) {
         let mut output = detail::to_json(&summary, &result.rows);
+        output["projects"] = projects::projects_json(&result.rows);
         if value
             && (shared.agents.is_empty() || shared.agents.iter().any(|agent| agent == "cursor"))
             && let Some(account) = cursor::load_account(shared.offline)
@@ -1247,6 +1249,7 @@ mod tests {
             metadata_agents: Some(vec![agent]),
             agent_breakdowns: None,
             model_breakdowns: Vec::new(),
+            project_breakdowns: Vec::new(),
         }
     }
 
@@ -1293,6 +1296,7 @@ mod tests {
             metadata_agents: Some(Vec::new()),
             agent_breakdowns: Some(agents),
             model_breakdowns: models,
+            project_breakdowns: Vec::new(),
         }
     }
 
@@ -1466,6 +1470,7 @@ mod tests {
             metadata_agents: Some(vec!["claude"]),
             agent_breakdowns: None,
             model_breakdowns: vec![model_token_breakdown("test-model", 100, 10, 20, 50, 265.0)],
+            project_breakdowns: Vec::new(),
         };
         let rows = vec![day_row(265.0, 180, vec![agent], Vec::new())];
 
@@ -1511,6 +1516,7 @@ mod tests {
                 900_000,
                 0.481,
             )],
+            project_breakdowns: Vec::new(),
         };
         let rows = vec![day_row(0.481, 1_130_000, vec![agent], Vec::new())];
 

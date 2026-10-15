@@ -1,0 +1,455 @@
+use serde_json::{Value, json};
+
+use super::{AllRow, percentage};
+use crate::{
+    fast::FxHashMap,
+    json_float,
+    project_root::{Project, ProjectKind, ProjectResolver},
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Kind {
+    Repository,
+    Folder,
+    Scratch,
+    Other,
+}
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Repository => "repository",
+            Kind::Folder => "folder",
+            Kind::Scratch => "scratch",
+            Kind::Other => "other",
+        }
+    }
+
+    /// Output order: projects by cost, then work outside any project, then
+    /// usage with no location at all.
+    fn rank(self) -> u8 {
+        match self {
+            Kind::Repository | Kind::Folder => 0,
+            Kind::Scratch => 1,
+            Kind::Other => 2,
+        }
+    }
+}
+
+struct ProjectTotal {
+    kind: Kind,
+    name: String,
+    path: Option<String>,
+    cost: f64,
+    tokens: u64,
+    agents: Vec<AgentShare>,
+}
+
+struct AgentShare {
+    agent: &'static str,
+    cost: f64,
+    tokens: u64,
+}
+
+/// Cost per project (git repository or leaf working folder). Usage from other
+/// locations is grouped as "Scratch", and usage without one as "Other".
+pub(super) fn projects_json(rows: &[AllRow]) -> Value {
+    projects_json_with(rows, ProjectResolver::new(crate::home::home_dir()))
+}
+
+fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
+    let agent_rows = rows
+        .iter()
+        .flat_map(|row| match row.agent_breakdowns.as_ref() {
+            Some(breakdowns) => breakdowns.iter().collect::<Vec<_>>(),
+            None if row.agent != "all" => vec![row],
+            None => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    for row in &agent_rows {
+        for project in &row.project_breakdowns {
+            if !project.cwd.is_empty() {
+                resolver.add(&project.cwd);
+            }
+        }
+    }
+    let resolved = resolver.finish();
+
+    let mut projects = Vec::<ProjectTotal>::new();
+    let mut indexes = FxHashMap::<(Kind, Option<&str>), usize>::default();
+    for row in &agent_rows {
+        if row.project_breakdowns.is_empty() {
+            let share = (row.agent, row.total_cost, row.total_tokens);
+            add_share(&mut projects, &mut indexes, (Kind::Other, None), share);
+        }
+        for project in &row.project_breakdowns {
+            let bucket = match resolved.get(project.cwd.as_ref()) {
+                Some(Some(project)) => {
+                    let kind = match project.kind {
+                        ProjectKind::Repository => Kind::Repository,
+                        ProjectKind::Folder => Kind::Folder,
+                    };
+                    (kind, Some(project))
+                }
+                Some(None) => (Kind::Scratch, None),
+                None => (Kind::Other, None),
+            };
+            let share = (row.agent, project.cost, project.total_tokens);
+            add_share(&mut projects, &mut indexes, bucket, share);
+        }
+    }
+
+    projects.retain(|project| project.tokens > 0 || project.cost > 0.0);
+    for project in &mut projects {
+        project.agents.sort_by(|a, b| {
+            b.cost
+                .total_cmp(&a.cost)
+                .then_with(|| b.tokens.cmp(&a.tokens))
+        });
+    }
+    projects.sort_by(|a, b| {
+        a.kind
+            .rank()
+            .cmp(&b.kind.rank())
+            .then_with(|| b.cost.total_cmp(&a.cost))
+            .then_with(|| b.tokens.cmp(&a.tokens))
+    });
+
+    let total_cost = projects.iter().map(|project| project.cost).sum::<f64>();
+    let total_tokens = projects.iter().map(|project| project.tokens).sum::<u64>();
+    let share = |project: &ProjectTotal| {
+        if total_cost > 0.0 {
+            percentage(project.cost, total_cost)
+        } else {
+            percentage(project.tokens as f64, total_tokens as f64)
+        }
+    };
+    json!(
+        projects
+            .iter()
+            .map(|project| json!({
+                "name": project.name,
+                "path": project.path,
+                "kind": project.kind.as_str(),
+                "totalCost": json_float(project.cost),
+                "totalTokens": project.tokens,
+                "percentage": json_float(share(project)),
+                "agents": project
+                    .agents
+                    .iter()
+                    .map(|share| json!({
+                        "agent": share.agent,
+                        "totalCost": json_float(share.cost),
+                        "totalTokens": share.tokens,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn add_share<'a>(
+    projects: &mut Vec<ProjectTotal>,
+    indexes: &mut FxHashMap<(Kind, Option<&'a str>), usize>,
+    (kind, project): (Kind, Option<&'a Project>),
+    (agent, cost, tokens): (&'static str, f64, u64),
+) {
+    let path = project.map(|project| project.path.as_str());
+    let index = *indexes.entry((kind, path)).or_insert_with(|| {
+        let name = match (kind, project) {
+            (_, Some(project)) => project.name.clone(),
+            (Kind::Scratch, None) => "Scratch".to_string(),
+            _ => "Other".to_string(),
+        };
+        projects.push(ProjectTotal {
+            kind,
+            name,
+            path: path.map(str::to_string),
+            cost: 0.0,
+            tokens: 0,
+            agents: Vec::new(),
+        });
+        projects.len() - 1
+    });
+    let total = &mut projects[index];
+    total.cost += cost;
+    total.tokens += tokens;
+    match total.agents.iter_mut().find(|share| share.agent == agent) {
+        Some(share) => {
+            share.cost += cost;
+            share.tokens += tokens;
+        }
+        None => total.agents.push(AgentShare {
+            agent,
+            cost,
+            tokens,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_burn_test_support::Fixture;
+
+    use super::*;
+    use crate::ProjectBreakdown;
+
+    fn project(cwd: &str, total_tokens: u64, cost: f64) -> ProjectBreakdown {
+        ProjectBreakdown {
+            cwd: cwd.into(),
+            total_tokens,
+            cost,
+        }
+    }
+
+    fn agent_row(
+        agent: &'static str,
+        total_tokens: u64,
+        total_cost: f64,
+        projects: Vec<ProjectBreakdown>,
+    ) -> AllRow {
+        AllRow {
+            agent,
+            total_tokens,
+            total_cost,
+            project_breakdowns: projects,
+            ..AllRow::default()
+        }
+    }
+
+    fn day(agents: Vec<AllRow>) -> AllRow {
+        AllRow {
+            period: "2026-01-02".to_string(),
+            agent: "all",
+            total_tokens: agents.iter().map(|row| row.total_tokens).sum(),
+            total_cost: agents.iter().map(|row| row.total_cost).sum(),
+            agent_breakdowns: Some(agents),
+            ..AllRow::default()
+        }
+    }
+
+    fn projects_json_for(fixture: &Fixture, rows: &[AllRow]) -> Value {
+        let resolver = ProjectResolver::new(Some(fixture.path("home")))
+            .with_scratch_roots(vec![fixture.path("tmp")]);
+        projects_json_with(rows, resolver)
+    }
+
+    fn repo(fixture: &Fixture, path: &str) -> String {
+        let _ = fixture.create_dir_all(format!("{path}/.git"));
+        fixture.path(path).to_string_lossy().into_owned()
+    }
+
+    fn summary(projects: &Value) -> Vec<(&str, &str, f64)> {
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|project| {
+                (
+                    project["name"].as_str().unwrap(),
+                    project["kind"].as_str().unwrap(),
+                    project["totalCost"].as_f64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sorts_repositories_by_cost_then_scratch_then_other() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/perso/app");
+        let web = repo(&fixture, "home/dev/perso/web");
+        let container = fixture
+            .path("home/dev/perso")
+            .to_string_lossy()
+            .into_owned();
+        let rows = vec![day(vec![
+            agent_row(
+                "claude",
+                70,
+                5.0,
+                vec![
+                    project(&web, 10, 0.5),
+                    project("", 40, 1.5),
+                    project(&container, 10, 2.0),
+                    project(&app, 10, 1.0),
+                ],
+            ),
+            agent_row("qwen", 5, 0.25, Vec::new()),
+        ])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(
+            summary(&projects),
+            vec![
+                ("app", "repository", 1.0),
+                ("web", "repository", 0.5),
+                ("Scratch", "scratch", 2.0),
+                ("Other", "other", 1.75),
+            ]
+        );
+        assert_eq!(projects[0]["path"], json!(app));
+        assert_eq!(projects[2]["path"], Value::Null);
+        assert_eq!(projects[3]["path"], Value::Null);
+    }
+
+    #[test]
+    fn counts_home_and_temp_folders_as_scratch() {
+        let fixture = Fixture::new();
+        let home = fixture.path("home").to_string_lossy().into_owned();
+        let tmp = fixture.path("tmp/x").to_string_lossy().into_owned();
+        let rows = vec![day(vec![agent_row(
+            "codex",
+            30,
+            3.0,
+            vec![project(&home, 10, 1.0), project(&tmp, 20, 2.0)],
+        )])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(summary(&projects), vec![("Scratch", "scratch", 3.0)]);
+        assert_eq!(projects[0]["agents"][0]["totalTokens"], 30);
+    }
+
+    #[test]
+    fn sorts_leaf_folders_with_repositories_by_cost() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
+        let tool = fixture
+            .path("home/dev/tool/src")
+            .to_string_lossy()
+            .into_owned();
+        let rows = vec![day(vec![agent_row(
+            "codex",
+            30,
+            3.0,
+            vec![project(&app, 10, 1.0), project(&tool, 20, 2.0)],
+        )])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(
+            summary(&projects),
+            vec![("tool", "folder", 2.0), ("app", "repository", 1.0)]
+        );
+        assert_eq!(
+            projects[0]["path"],
+            json!(fixture.path("home/dev/tool").to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn groups_worktree_usage_under_its_repository_and_splits_it_by_agent() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("home/dev/app/.git");
+        let repo = fixture.path("home/dev/app");
+        let worktree = repo.join(".claude/worktrees/feature");
+        let rows = vec![
+            day(vec![
+                agent_row(
+                    "claude",
+                    30,
+                    3.0,
+                    vec![
+                        project(&repo.to_string_lossy(), 10, 1.0),
+                        project(&worktree.to_string_lossy(), 20, 2.0),
+                    ],
+                ),
+                agent_row(
+                    "codex",
+                    5,
+                    0.5,
+                    vec![project(&repo.join("src").to_string_lossy(), 5, 0.5)],
+                ),
+            ]),
+            day(vec![agent_row(
+                "codex",
+                7,
+                0.25,
+                vec![project(&repo.to_string_lossy(), 7, 0.25)],
+            )]),
+        ];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(
+            projects,
+            json!([{
+                "name": "app",
+                "path": repo.to_string_lossy(),
+                "kind": "repository",
+                "totalCost": 3.75,
+                "totalTokens": 42,
+                "percentage": 100,
+                "agents": [
+                    { "agent": "claude", "totalCost": 3, "totalTokens": 30 },
+                    { "agent": "codex", "totalCost": 0.75, "totalTokens": 12 },
+                ],
+            }])
+        );
+    }
+
+    #[test]
+    fn project_costs_add_up_to_the_summary_total() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
+        let rows = vec![day(vec![
+            agent_row(
+                "claude",
+                30,
+                0.75,
+                vec![project(&app, 10, 0.25), project("", 20, 0.5)],
+            ),
+            agent_row("kimi", 8, 0.125, vec![project("/x/web", 8, 0.125)]),
+        ])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        let projects = projects.as_array().unwrap();
+        let cost = projects
+            .iter()
+            .map(|project| project["totalCost"].as_f64().unwrap())
+            .sum::<f64>();
+        let percentage = projects
+            .iter()
+            .map(|project| project["percentage"].as_f64().unwrap())
+            .sum::<f64>();
+        assert!((cost - 0.875).abs() < 1e-12);
+        assert!((percentage - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn omits_scratch_and_other_when_all_usage_is_in_repositories() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
+        let rows = vec![day(vec![agent_row(
+            "claude",
+            10,
+            1.0,
+            vec![project(&app, 10, 1.0)],
+        )])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(summary(&projects), vec![("app", "repository", 1.0)]);
+    }
+
+    #[test]
+    fn falls_back_to_token_share_without_cost() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
+        let web = repo(&fixture, "home/dev/web");
+        let rows = vec![day(vec![agent_row(
+            "claude",
+            40,
+            0.0,
+            vec![project(&app, 30, 0.0), project(&web, 10, 0.0)],
+        )])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(projects[0]["percentage"], 75);
+        assert_eq!(projects[1]["percentage"], 25);
+    }
+}

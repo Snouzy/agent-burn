@@ -134,6 +134,7 @@ mod tests {
             model_breakdowns: Vec::new(),
             project: None,
             versions: None,
+            project_breakdowns: Vec::new(),
         }
     }
 }
