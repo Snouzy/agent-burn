@@ -9,13 +9,15 @@ import SwiftUI
   // The panel is not part of a SwiftUI scene, so it has no openWindow action of its own.
   @ObservationIgnored var showDashboard: (() -> Void)?
   private(set) var disk: DiskSpace?
+  private(set) var memory: MemoryStats?
   private let appearance: AppAppearance
   private let readDisk: () -> DiskSpace?
+  private let readMemory: () -> MemoryStats?
   private let openURL: (URL) -> Void
   private var store: UsageStore?
   private var panel: NSPanel?
   private var agentCount = 0
-  var ringCount: Int { agentCount + (disk == nil ? 0 : 1) }
+  var ringCount: Int { agentCount + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1) }
   private var cardHeight: CGFloat?
   private var monitors: [Any] = []
   private var screenObserver: (any NSObjectProtocol)?
@@ -24,17 +26,22 @@ import SwiftUI
   init(
     appearance: AppAppearance = .shared,
     readDisk: @escaping () -> DiskSpace? = DiskSpace.startupDisk,
+    readMemory: @escaping () -> MemoryStats? = MemoryStats.system,
     openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
   ) {
     self.appearance = appearance
     self.readDisk = readDisk
+    self.readMemory = readMemory
     self.openURL = openURL
   }
 
   func attach(_ store: UsageStore) { self.store = store }
 
   func apply(_ on: Bool) {
-    if on { refreshDisk() }
+    if on {
+      refreshDisk()
+      refreshMemory()
+    }
     if !on { hide() } else if panel == nil { show() } else { place() }
   }
 
@@ -54,6 +61,10 @@ import SwiftUI
 
   func openStorage() {
     openURL(URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!)
+  }
+
+  func openActivityMonitor() {
+    openURL(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
   }
 
   func scheduleClose() {
@@ -77,6 +88,14 @@ import SwiftUI
     guard next?.drawn != disk?.drawn else { return }
     let resized = (next == nil) != (disk == nil)
     disk = next
+    if resized { place() }
+  }
+
+  func refreshMemory() {
+    let next = appearance.showsMemory ? readMemory() : nil
+    guard next?.drawn != memory?.drawn else { return }
+    let resized = (next == nil) != (memory == nil)
+    memory = next
     if resized { place() }
   }
 
@@ -184,29 +203,34 @@ struct NotchRoot: View {
   let controller: NotchController
   let store: UsageStore
   @State private var diskHovered = false
+  @State private var memoryHovered = false
 
   var body: some View {
     let now = store.quotaCheckDate
     let rings = NotchModel.rings(store: store, now: now)
     let disk = controller.disk
+    let memory = controller.memory
     ZStack(alignment: .trailing) {
-      if !rings.isEmpty || disk != nil {
+      if !rings.isEmpty || disk != nil || memory != nil {
         HStack(spacing: NotchModel.cardGap) {
           NotchCardStack(controller: controller, store: store, now: now)
-          notch(rings, disk: disk)
+          notch(rings, disk: disk, memory: memory)
         }
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
     .onChange(of: rings.map(\.agent), initial: true) { controller.ringsChanged($1) }
-    .onChange(of: now) { controller.refreshDisk() }
+    .onChange(of: now) {
+      controller.refreshDisk()
+      controller.refreshMemory()
+    }
     .onChange(
       of: controller.openAgent.flatMap { NotchModel.cardHeight(store: store, agent: $0) },
       initial: true
     ) { controller.cardHeightChanged($1) }
   }
 
-  private func notch(_ rings: [NotchRing], disk: DiskSpace?) -> some View {
+  private func notch(_ rings: [NotchRing], disk: DiskSpace?, memory: MemoryStats?) -> some View {
     VStack(spacing: NotchModel.cellSpacing) {
       ForEach(rings) { ring in
         UsageRing(ring: ring, highlighted: controller.openAgent == ring.agent)
@@ -227,12 +251,25 @@ struct NotchRoot: View {
           .accessibilityAddTraits(.isButton)
           .onDisappear { diskHovered = false }
       }
+      if let memory {
+        MemoryRing(memory: memory, highlighted: memoryHovered)
+          .frame(width: NotchModel.notchDepth)
+          .contentShape(Rectangle())
+          .onHover { hovering in
+            memoryHovered = hovering
+            if hovering { controller.scheduleClose() }
+          }
+          .onTapGesture { controller.openActivityMonitor() }
+          .accessibilityAddTraits(.isButton)
+          .onDisappear { memoryHovered = false }
+      }
     }
     .padding(.top, NotchModel.curl + NotchModel.padTop)
     .padding(.bottom, NotchModel.curl + NotchModel.padBottom)
     .frame(
       width: NotchModel.notchDepth,
-      height: NotchModel.notchHeight(ringCount: rings.count + (disk == nil ? 0 : 1))
+      height: NotchModel.notchHeight(
+        ringCount: rings.count + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1))
     )
     .background(NotchShape().fill(.black))
   }

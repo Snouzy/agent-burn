@@ -774,3 +774,130 @@ private final class DiskReader {
       != store.samples(for: "codex", range: .week, now: wall))
   #expect(card.samples == store.samples(for: "codex", range: card.range, now: now))
 }
+
+@Test func notchMemoryPressureFollowsTheKernelLevels() {
+  #expect(MemoryStats.pressure(level: 1) == .normal)
+  #expect(MemoryStats.pressure(level: 2) == .warning)
+  #expect(MemoryStats.pressure(level: 4) == .critical)
+}
+
+@Test func notchMemoryReadsTheSystemLikeFoundation() throws {
+  let memory = try #require(MemoryStats.system())
+  #expect(memory.total == Int64(ProcessInfo.processInfo.physicalMemory))
+  #expect(memory.available > 0 && memory.available < memory.total)
+}
+
+@Test func notchMemoryVoiceOverNamesAvailableTotalAndPressure() {
+  let memory = MemoryStats(available: 9_200_000_000, total: 34_359_738_368, pressure: .warning)
+  #expect(
+    memory.voiceOverLabel(locale: Locale(identifier: "en_US"))
+      == "Memory, 9.2 gigabytes available of 34 gigabytes, warning pressure")
+}
+
+private let nineGB = MemoryStats(available: 9_200_000_000, total: 34_359_738_368, pressure: .normal)
+
+private final class MemoryReader {
+  var reading: MemoryStats? = nineGB
+  private(set) var reads = 0
+  func read() -> MemoryStats? {
+    reads += 1
+    return reading
+  }
+}
+
+@Test @MainActor func notchMemorySwitchDefaultsOffAndPersists() throws {
+  let suite = "AgentBurn.notch.memory.\(UUID().uuidString)"
+  let defaults = try #require(UserDefaults(suiteName: suite))
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let appearance = AppAppearance(defaults: defaults, applyPolicy: { _ in })
+  var changes: [Bool] = []
+  appearance.onNotchChange = { changes.append($0) }
+  #expect(!appearance.showsMemory)
+  appearance.showsMemory = true
+  #expect(AppAppearance(defaults: defaults, applyPolicy: { _ in }).showsMemory)
+  #expect(changes == [false])
+}
+
+@Test @MainActor func notchRingCountAddsTheMemoryRingNextToTheDiskRing() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  appearance.showsMemory = true
+  let reader = MemoryReader()
+  let controller = NotchController(
+    appearance: appearance, readDisk: DiskReader().read, readMemory: reader.read)
+  controller.ringsChanged(["codex"])
+  controller.refreshDisk()
+  controller.refreshMemory()
+  #expect(controller.ringCount == 3)
+  appearance.showsMemory = false
+  controller.refreshMemory()
+  #expect(controller.ringCount == 2)
+  appearance.showsMemory = true
+  reader.reading = nil
+  controller.refreshMemory()
+  #expect(controller.ringCount == 2)
+}
+
+@Test @MainActor func notchStoreTickRereadsTheMemory() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  let (appearance, appearanceSuite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    UserDefaults(suiteName: appearanceSuite)?.removePersistentDomain(forName: appearanceSuite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  appearance.showsMemory = true
+  let reader = MemoryReader()
+  let controller = NotchController(appearance: appearance, readMemory: reader.read)
+  controller.apply(true)
+  let host = NSHostingView(rootView: NotchRoot(controller: controller, store: store))
+  host.frame = CGRect(
+    x: 0, y: 0, width: NotchModel.cardWidth + NotchModel.cardGap + NotchModel.notchDepth,
+    height: NotchModel.largestCardHeight)
+  host.layoutSubtreeIfNeeded()
+  #expect(reader.reads == 1)
+
+  reader.reading = MemoryStats(available: 2_000_000_000, total: 34_359_738_368, pressure: .critical)
+  store.quotaCheckDate.addTimeInterval(5)
+  host.layoutSubtreeIfNeeded()
+  #expect(reader.reads == 2)
+  #expect(controller.memory == reader.reading)
+}
+
+@Test @MainActor func notchMemoryPressureChangeRedrawsEvenWithTheSameAmount() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  appearance.showsMemory = true
+  let reader = MemoryReader()
+  let controller = NotchController(appearance: appearance, readMemory: reader.read)
+  controller.refreshMemory()
+  reader.reading = MemoryStats(available: 9_210_000_000, total: 34_359_738_368, pressure: .normal)
+  controller.refreshMemory()
+  #expect(controller.memory == nineGB)
+  reader.reading = MemoryStats(available: 9_210_000_000, total: 34_359_738_368, pressure: .warning)
+  controller.refreshMemory()
+  #expect(controller.memory == reader.reading)
+}
+
+@Test @MainActor func notchMemoryClickOpensActivityMonitor() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  var opened: [URL] = []
+  let controller = NotchController(appearance: appearance, openURL: { opened.append($0) })
+  controller.openActivityMonitor()
+  #expect(opened.map(\.path) == ["/System/Applications/Utilities/Activity Monitor.app"])
+}
+
+@Test @MainActor func notchMemoryWidestLabelFitsTheNotch() throws {
+  let cell = NotchModel.ringDiameter + NotchModel.labelGap + NotchModel.percentLine
+  for available: Int64 in [9_940_000_000, 137_000_000_000, 512_000_000_000] {
+    let ring = MemoryRing(
+      memory: MemoryStats(available: available, total: 549_755_813_888, pressure: .normal),
+      highlighted: false
+    )
+    .environment(\.locale, Locale(identifier: "en_US"))
+    let size = try #require(ImageRenderer(content: ring.fixedSize()).nsImage?.size)
+    #expect(size.width <= NotchModel.notchDepth, "\(available) bytes: \(size.width) pt wide")
+    #expect(size.height == cell)
+  }
+}

@@ -35,6 +35,13 @@ import SwiftUI
     }
   }
 
+  var showsMemory: Bool {
+    didSet {
+      defaults.set(showsMemory, forKey: "showsMemory")
+      onNotchChange?(showsNotch)
+    }
+  }
+
   var onNotchChange: ((Bool) -> Void)?
 
   init(
@@ -49,6 +56,7 @@ import SwiftUI
     showsNotch = defaults.bool(forKey: "showsNotch")
     notchDisplay = defaults.string(forKey: "notchDisplay")
     showsDiskSpace = defaults.bool(forKey: "showsDiskSpace")
+    showsMemory = defaults.bool(forKey: "showsMemory")
   }
 
   func apply() { applyPolicy(menuBarOnly ? .accessory : .regular) }
@@ -117,6 +125,10 @@ struct AppearanceSettings: View {
       Toggle("Show free disk space", isOn: $appearance.showsDiskSpace)
         .disabled(!appearance.showsNotch)
       Text("Adds a ring with the free space on your startup disk.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("Show available memory", isOn: $appearance.showsMemory)
+        .disabled(!appearance.showsNotch)
+      Text("Adds a ring with the available RAM, colored by memory pressure.")
         .font(.caption).foregroundStyle(.secondary)
     }
   }

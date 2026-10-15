@@ -45,6 +45,22 @@ struct DiskRing: View {
   }
 }
 
+struct MemoryRing: View {
+  let memory: MemoryStats
+  let highlighted: Bool
+  @Environment(\.locale) private var locale
+
+  var body: some View {
+    RingCell(
+      progress: 1 - memory.availablePercent / 100, color: memory.tone,
+      label: DiskSpace.label(bytes: memory.available, locale: locale), highlighted: highlighted,
+      opacity: 1, voiceOverLabel: memory.voiceOverLabel(locale: locale)
+    ) {
+      Image(systemName: "memorychip").font(.system(size: 14)).foregroundStyle(.white)
+    }
+  }
+}
+
 private struct RingCell<Center: View>: View {
   let progress: Double
   let color: Color
