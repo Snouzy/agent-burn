@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
@@ -11,8 +12,8 @@ use memchr::memmem;
 use serde::Deserialize;
 
 use crate::{
-    ModelBreakdown, PricingMap, Result, Speed, TimestampMs, TokenCounts, TokenUsageRaw,
-    UsageSummary, calculate_cost_for_usage,
+    ModelBreakdown, PricingMap, ProjectBreakdown, Result, Speed, TimestampMs, TokenCounts,
+    TokenUsageRaw, UsageSummary, calculate_cost_for_usage,
     cli::{CostMode, SharedArgs},
     fast::{FxHashMap, SmallIndexVec, byte_lines, suffix_string},
     format_date_tz, log_level, missing_pricing_model_for_usage, parse_ts_timestamp, parse_tz,
@@ -114,6 +115,7 @@ struct DailyLoadedFile {
 struct DailyLoadedEntry {
     date: String,
     project: Arc<str>,
+    cwd: Option<Arc<str>>,
     usage: TokenUsageRaw,
     cost: f64,
     model: Option<String>,
@@ -125,7 +127,9 @@ struct DailyLoadedEntry {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DailyUsageEntry {
+struct DailyUsageEntry<'a> {
+    #[serde(borrow, default)]
+    cwd: Option<Cow<'a, str>>,
     timestamp: String,
     message: DailyUsageMessage,
     version: Option<String>,
@@ -138,16 +142,19 @@ struct DailyUsageEntry {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum DailyUsageLine {
-    Direct(DailyUsageEntry),
-    AgentProgress(DailyAgentProgressEntry),
+enum DailyUsageLine<'a> {
+    #[serde(borrow)]
+    Direct(DailyUsageEntry<'a>),
+    #[serde(borrow)]
+    AgentProgress(DailyAgentProgressEntry<'a>),
 }
 
-impl DailyUsageLine {
-    fn into_entry(self) -> DailyUsageEntry {
+impl<'a> DailyUsageLine<'a> {
+    fn into_entry(self) -> DailyUsageEntry<'a> {
         match self {
             DailyUsageLine::Direct(entry) => entry,
             DailyUsageLine::AgentProgress(entry) => DailyUsageEntry {
+                cwd: entry.cwd,
                 timestamp: entry.data.message.timestamp,
                 message: entry.data.message.message,
                 version: None,
@@ -161,7 +168,9 @@ impl DailyUsageLine {
 }
 
 #[derive(Debug, Deserialize)]
-struct DailyAgentProgressEntry {
+struct DailyAgentProgressEntry<'a> {
+    #[serde(borrow, default)]
+    cwd: Option<Cow<'a, str>>,
     data: DailyAgentProgressData,
 }
 
@@ -253,6 +262,9 @@ fn read_daily_usage_file(
     };
 
     let usage_marker = memmem::Finder::new(br#""usage":{"#);
+    // Sessions can change directory, so usage is attributed per line; lines
+    // without a cwd keep the previous one.
+    let mut cwd: Option<Arc<str>> = None;
     for line in byte_lines(&content) {
         if usage_marker.find(line).is_none() {
             continue;
@@ -264,6 +276,11 @@ fn read_daily_usage_file(
             continue;
         };
         let data = data.into_entry();
+        if let Some(line_cwd) = data.cwd.as_deref()
+            && cwd.as_deref() != Some(line_cwd)
+        {
+            cwd = Some(Arc::from(line_cwd));
+        }
         let Some(timestamp) = parse_ts_timestamp(&data.timestamp) else {
             continue;
         };
@@ -302,6 +319,7 @@ fn read_daily_usage_file(
         loaded_file.entries.push(DailyLoadedEntry {
             date: format_date_tz(timestamp, tz),
             project: Arc::clone(&project),
+            cwd: cwd.clone(),
             usage,
             cost,
             model,
@@ -314,7 +332,7 @@ fn read_daily_usage_file(
     loaded_file
 }
 
-fn is_valid_daily_usage_entry(data: &DailyUsageEntry) -> bool {
+fn is_valid_daily_usage_entry(data: &DailyUsageEntry<'_>) -> bool {
     if data
         .version
         .as_deref()
@@ -451,12 +469,25 @@ struct DailyAccumulator {
     models: Vec<String>,
     breakdowns: Vec<ModelBreakdown>,
     breakdown_indexes: FxHashMap<String, usize>,
+    projects: Vec<(Option<Arc<str>>, u64, f64)>,
 }
 
 impl DailyAccumulator {
     fn add_entry(&mut self, entry: &DailyLoadedEntry) {
         self.counts.add_usage(entry.usage);
         self.cost += entry.cost;
+        let tokens = daily_usage_token_total(entry);
+        match self
+            .projects
+            .iter_mut()
+            .find(|(cwd, _, _)| *cwd == entry.cwd)
+        {
+            Some((_, total_tokens, cost)) => {
+                *total_tokens += tokens;
+                *cost += entry.cost;
+            }
+            None => self.projects.push((entry.cwd.clone(), tokens, entry.cost)),
+        }
         if let Some(model) = &entry.model {
             let index = if let Some(index) = self.breakdown_indexes.get(model.as_str()) {
                 *index
@@ -504,7 +535,15 @@ impl DailyAccumulator {
             model_breakdowns: self.breakdowns,
             project: None,
             versions: None,
-            project_breakdowns: Vec::new(),
+            project_breakdowns: self
+                .projects
+                .into_iter()
+                .map(|(cwd, total_tokens, cost)| ProjectBreakdown {
+                    cwd: cwd.unwrap_or_else(|| Arc::from("")),
+                    total_tokens,
+                    cost,
+                })
+                .collect(),
         }
     }
 }
@@ -513,8 +552,135 @@ impl DailyAccumulator {
 mod tests {
     use std::sync::Arc;
 
-    use super::{DailyLoadedEntry, push_deduped_daily_entry};
-    use crate::TokenUsageRaw;
+    use agent_burn_test_support::{EnvVarGuard, fs_fixture};
+
+    use super::{DailyLoadedEntry, load_daily_summaries_inner, push_deduped_daily_entry};
+    use crate::{
+        ProjectBreakdown, TokenUsageRaw, UsageSummary,
+        cli::{CostMode, SharedArgs},
+    };
+
+    fn usage_line(timestamp: &str, cwd: Option<&str>, id: &str, input: u64, cost: f64) -> String {
+        let cwd = cwd.map_or(String::new(), |cwd| format!(r#""cwd":"{cwd}","#));
+        format!(
+            r#"{{{cwd}"timestamp":"{timestamp}","version":"1.2.3","sessionId":"s","message":{{"id":"{id}","model":"claude-sonnet-4-20250514","usage":{{"input_tokens":{input},"output_tokens":0}}}},"requestId":"req-{id}","costUSD":{cost}}}"#
+        )
+    }
+
+    fn load_daily(root: &std::path::Path) -> Vec<UsageSummary> {
+        let _env = EnvVarGuard::set("CLAUDE_CONFIG_DIR", root);
+        let shared = SharedArgs {
+            mode: CostMode::Display,
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        load_daily_summaries_inner(&shared, None, false).unwrap()
+    }
+
+    fn projects(summary: &UsageSummary) -> Vec<ProjectBreakdown> {
+        let mut projects = summary.project_breakdowns.clone();
+        projects.sort_by(|a, b| a.cwd.cmp(&b.cwd));
+        projects
+    }
+
+    fn project(cwd: &str, total_tokens: u64, cost: f64) -> ProjectBreakdown {
+        ProjectBreakdown {
+            cwd: cwd.into(),
+            total_tokens,
+            cost,
+        }
+    }
+
+    #[test]
+    fn attributes_daily_usage_to_the_cwd_of_each_line() {
+        let fixture = fs_fixture!({
+            "projects/app/session.jsonl": [
+                usage_line("2026-03-10T06:00:00.000Z", Some("/dev/app"), "m1", 10, 0.25),
+                usage_line("2026-03-10T06:01:00.000Z", Some("/dev/app/.claude/worktrees/x"), "m2", 20, 0.5),
+                usage_line("2026-03-10T06:02:00.000Z", Some("/dev/app"), "m3", 40, 1.0),
+            ]
+            .join("\n"),
+        });
+
+        let daily = load_daily(fixture.root());
+
+        assert_eq!(
+            projects(&daily[0]),
+            vec![
+                project("/dev/app", 50, 1.25),
+                project("/dev/app/.claude/worktrees/x", 20, 0.5),
+            ]
+        );
+    }
+
+    #[test]
+    fn lines_without_cwd_inherit_the_previous_line_cwd() {
+        let fixture = fs_fixture!({
+            "projects/app/session.jsonl": [
+                usage_line("2026-03-10T06:00:00.000Z", None, "m1", 10, 0.25),
+                usage_line("2026-03-10T06:01:00.000Z", Some("/dev/app"), "m2", 20, 0.5),
+                usage_line("2026-03-10T06:02:00.000Z", None, "m3", 40, 1.0),
+            ]
+            .join("\n"),
+        });
+
+        let daily = load_daily(fixture.root());
+
+        assert_eq!(
+            projects(&daily[0]),
+            vec![project("", 10, 0.25), project("/dev/app", 60, 1.5)]
+        );
+    }
+
+    #[test]
+    fn attributes_agent_progress_usage_to_the_outer_line_cwd() {
+        let fixture = fs_fixture!({
+            "projects/app/session.jsonl": r#"{"cwd":"/dev/app","sessionId":"s","version":"1.2.3","type":"progress","data":{"message":{"type":"assistant","timestamp":"2026-03-10T06:00:01.000Z","message":{"model":"claude-sonnet-4-20250514","id":"m1","usage":{"input_tokens":20,"output_tokens":2}},"requestId":"req-m1","costUSD":0.5}},"timestamp":"2026-03-10T06:00:01.001Z"}"#,
+        });
+
+        let daily = load_daily(fixture.root());
+
+        assert_eq!(projects(&daily[0]), vec![project("/dev/app", 22, 0.5)]);
+    }
+
+    #[test]
+    fn deduplicated_messages_keep_a_single_project_attribution() {
+        let fixture = fs_fixture!({
+            "projects/app/a.jsonl": usage_line("2026-03-10T06:00:00.000Z", Some("/dev/app"), "m1", 10, 0.25),
+            "projects/app/b.jsonl": usage_line("2026-03-10T06:00:00.000Z", Some("/dev/other"), "m1", 30, 0.75),
+        });
+
+        let daily = load_daily(fixture.root());
+
+        assert_eq!(projects(&daily[0]), vec![project("/dev/other", 30, 0.75)]);
+    }
+
+    #[test]
+    fn daily_project_breakdowns_sum_to_the_day_totals() {
+        let fixture = fs_fixture!({
+            "projects/app/session.jsonl": [
+                usage_line("2026-03-10T06:00:00.000Z", Some("/dev/app"), "m1", 10, 0.25),
+                usage_line("2026-03-10T07:00:00.000Z", Some("/dev/web"), "m2", 20, 0.5),
+                usage_line("2026-03-11T06:00:00.000Z", Some("/dev/web"), "m3", 40, 1.0),
+            ]
+            .join("\n"),
+        });
+
+        let daily = load_daily(fixture.root());
+
+        assert_eq!(daily.len(), 2);
+        for summary in &daily {
+            let projects = &summary.project_breakdowns;
+            assert_eq!(
+                projects.iter().map(|p| p.total_tokens).sum::<u64>(),
+                summary.total_tokens()
+            );
+            assert_eq!(
+                projects.iter().map(|p| p.cost).sum::<f64>(),
+                summary.total_cost
+            );
+        }
+    }
 
     #[test]
     fn keeps_parent_daily_usage_when_sidechain_replays_message_with_new_request_id() {
@@ -589,6 +755,7 @@ mod tests {
         DailyLoadedEntry {
             date: "2026-03-29".to_string(),
             project: Arc::from("project-a"),
+            cwd: None,
             usage: TokenUsageRaw {
                 input_tokens: 0,
                 output_tokens: fixture.output_tokens,
