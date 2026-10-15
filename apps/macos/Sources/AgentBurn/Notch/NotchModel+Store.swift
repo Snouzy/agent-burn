@@ -73,6 +73,7 @@ extension NotchModel {
   }
 
   @MainActor static func cardHeight(store: UsageStore, agent: String) -> CGFloat? {
+    if agent == memoryCard { return memoryCardHeight }
     guard store.forecast(for: agent) != nil else { return nil }
     let report = store.reports[agent]
     return cardHeight(hasSpend: report != nil, modelCount: report?.topModels.count ?? 0)

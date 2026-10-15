@@ -74,7 +74,7 @@ struct MemoryRing: View {
   var body: some View {
     RingCell(
       progress: 1 - memory.availablePercent / 100, color: memory.tone,
-      label: DiskSpace.label(bytes: memory.available, locale: locale), highlighted: highlighted,
+      label: MemoryStats.label(bytes: memory.available, locale: locale), highlighted: highlighted,
       opacity: 1, voiceOverLabel: memory.voiceOverLabel(locale: locale), metrics: metrics,
       onRemove: onRemove
     ) {
