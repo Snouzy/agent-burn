@@ -1125,3 +1125,77 @@ private final class MemoryReader {
   let limit = try renderedHeight(rows.limit)
   #expect(abs(limit - NotchModel.limitHeight) < 1, "limit \(limit)")
 }
+
+@Test @MainActor func notchHiddenAgentsPersistAndLeaveTheNotch() throws {
+  let (appearance, appearanceSuite) = notchAppearanceFixture(showsDiskSpace: false)
+  let (store, suite, directory) = notchStoreFixture()
+  defer {
+    UserDefaults(suiteName: appearanceSuite)?.removePersistentDomain(forName: appearanceSuite)
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  store.summary = SummaryReport(
+    totals: Totals(totalCost: 0, totalTokens: 0),
+    agents: [agentUsage("codex"), agentUsage("claude")], models: [], daily: nil,
+    subscription: nil)
+  let source = store.customPath + "|" + store.codexHomes
+  let now = Date.now
+  var history = QuotaHistory()
+  for agent in ["codex", "claude"] {
+    history.record(
+      QuotaReading(
+        agent: agent, observedAt: now.timeIntervalSince1970 * 1000,
+        window: QuotaWindow(
+          windowMinutes: 10_080, usedPercent: 20, elapsedPercent: 50, apiEquivalentSpent: 0)),
+      source: source)
+  }
+  try QuotaHistoryFile(directory: directory).save(history)
+  store.reloadQuotas()
+  let controller = NotchController(appearance: appearance)
+  controller.open("claude")
+
+  controller.hideRing("claude")
+  controller.ringsChanged(
+    NotchModel.rings(store: store, hiding: controller.hiddenAgents, now: now).map(\.agent))
+  #expect(
+    NotchModel.rings(store: store, hiding: controller.hiddenAgents, now: now).map(\.agent) == [
+      "codex"
+    ])
+  #expect(
+    NotchModel.cards(store: store, hiding: controller.hiddenAgents, now: now).map(\.agent) == [
+      "codex"
+    ])
+  #expect(controller.openAgent == nil, "The hover card of a hidden ring closes")
+  #expect(controller.ringCount == 1)
+  let suiteDefaults = try #require(UserDefaults(suiteName: appearanceSuite))
+  #expect(
+    AppAppearance(defaults: suiteDefaults, applyPolicy: { _ in }).hiddenNotchAgents == ["claude"])
+}
+
+@Test @MainActor func notchHidingTheDiskOrMemoryRingTurnsItsSettingOff() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  appearance.showsMemory = true
+  let controller = NotchController(
+    appearance: appearance, readDisk: DiskReader().read, readMemory: MemoryReader().read)
+  controller.refreshDisk()
+  controller.refreshMemory()
+  controller.hideDisk()
+  controller.hideMemory()
+  #expect(!appearance.showsDiskSpace)
+  #expect(!appearance.showsMemory)
+  #expect(controller.disk == nil)
+  #expect(controller.memory == nil)
+}
+
+@Test @MainActor func notchRemoveBadgeKeepsTheRingCellSize() throws {
+  let ring = NotchRing(agent: "codex", usedPercent: 40, stale: false, style: .weekly)
+  for scale in [0.7, 1, 1.4] {
+    let metrics = NotchMetrics(scale: scale)
+    let cell = metrics.ringDiameter + metrics.labelGap + metrics.percentLine
+    let view = UsageRing(ring: ring, highlighted: true, metrics: metrics, onRemove: {})
+    let size = try #require(ImageRenderer(content: view.fixedSize()).nsImage?.size)
+    #expect(size.width <= metrics.notchDepth, "\(scale)×: \(size.width) pt wide")
+    #expect(abs(size.height - cell) < 1, "\(scale)×: \(size.height) pt tall")
+  }
+}

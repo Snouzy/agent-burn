@@ -72,6 +72,20 @@ import SwiftUI
     openURL(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
   }
 
+  var hiddenAgents: Set<String> { appearance.hiddenNotchAgents }
+
+  func hideRing(_ agent: String) { appearance.hiddenNotchAgents.insert(agent) }
+
+  func hideDisk() {
+    appearance.showsDiskSpace = false
+    refreshDisk()
+  }
+
+  func hideMemory() {
+    appearance.showsMemory = false
+    refreshMemory()
+  }
+
   // Screen x coordinates, so the panel resizing under the pointer never shifts the drag.
   func beginResize(mouseX: CGFloat) {
     cancelClose()
@@ -229,7 +243,8 @@ struct NotchRoot: View {
 
   var body: some View {
     let now = store.quotaCheckDate
-    let rings = NotchModel.rings(store: store, now: now)
+    let hidden = controller.hiddenAgents
+    let rings = NotchModel.rings(store: store, hiding: hidden, now: now)
     let disk = controller.disk
     let memory = controller.memory
     ZStack(alignment: .trailing) {
@@ -268,32 +283,40 @@ private struct NotchColumn: View {
     let cells = rings.count + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1)
     VStack(spacing: metrics.cellSpacing) {
       ForEach(Array(rings.enumerated()), id: \.element.id) { index, ring in
-        UsageRing(ring: ring, highlighted: controller.openAgent == ring.agent, metrics: metrics)
-          .modifier(magnified(index, metrics))
-          .onHover { $0 ? controller.open(ring.agent) : controller.scheduleClose() }
-          .onTapGesture { controller.openDashboard(ring.agent) }
+        UsageRing(
+          ring: ring, highlighted: controller.openAgent == ring.agent, metrics: metrics,
+          onRemove: { controller.hideRing(ring.agent) }
+        )
+        .modifier(magnified(index, metrics))
+        .onHover { $0 ? controller.open(ring.agent) : controller.scheduleClose() }
+        .onTapGesture { controller.openDashboard(ring.agent) }
       }
       if let disk {
-        DiskRing(disk: disk, highlighted: diskHovered, metrics: metrics)
-          .modifier(magnified(rings.count, metrics))
-          .onHover { hovering in
-            diskHovered = hovering
-            if hovering { controller.scheduleClose() }
-          }
-          .onTapGesture { controller.openStorage() }
-          .accessibilityAddTraits(.isButton)
-          .onDisappear { diskHovered = false }
+        DiskRing(
+          disk: disk, highlighted: diskHovered, metrics: metrics, onRemove: controller.hideDisk
+        )
+        .modifier(magnified(rings.count, metrics))
+        .onHover { hovering in
+          diskHovered = hovering
+          if hovering { controller.scheduleClose() }
+        }
+        .onTapGesture { controller.openStorage() }
+        .accessibilityAddTraits(.isButton)
+        .onDisappear { diskHovered = false }
       }
       if let memory {
-        MemoryRing(memory: memory, highlighted: memoryHovered, metrics: metrics)
-          .modifier(magnified(cells - 1, metrics))
-          .onHover { hovering in
-            memoryHovered = hovering
-            if hovering { controller.scheduleClose() }
-          }
-          .onTapGesture { controller.openActivityMonitor() }
-          .accessibilityAddTraits(.isButton)
-          .onDisappear { memoryHovered = false }
+        MemoryRing(
+          memory: memory, highlighted: memoryHovered, metrics: metrics,
+          onRemove: controller.hideMemory
+        )
+        .modifier(magnified(cells - 1, metrics))
+        .onHover { hovering in
+          memoryHovered = hovering
+          if hovering { controller.scheduleClose() }
+        }
+        .onTapGesture { controller.openActivityMonitor() }
+        .accessibilityAddTraits(.isButton)
+        .onDisappear { memoryHovered = false }
       }
     }
     .padding(.top, metrics.curl + metrics.padTop)
@@ -403,7 +426,9 @@ private struct NotchCardStack: View {
 
   var body: some View {
     ZStack {
-      ForEach(NotchModel.cards(store: store, now: now), id: \.agent) { card in
+      ForEach(
+        NotchModel.cards(store: store, hiding: controller.hiddenAgents, now: now), id: \.agent
+      ) { card in
         NotchCard(data: card).modifier(CardVisibility(agent: card.agent, controller: controller))
       }
     }

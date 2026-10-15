@@ -1,9 +1,11 @@
 import Foundation
 
 extension NotchModel {
-  @MainActor static func rings(store: UsageStore, now: Date = .now) -> [NotchRing] {
+  @MainActor static func rings(store: UsageStore, hiding hidden: Set<String> = [], now: Date = .now)
+    -> [NotchRing]
+  {
     // A harness can have live quotas before it has logged any usage, e.g. right after a login.
-    let known = Set(store.knownAgents).union(harnessAgents)
+    let known = Set(store.knownAgents).union(harnessAgents).subtracting(hidden)
     return agents(known: Array(known), hasForecast: { store.forecast(for: $0) != nil }).map {
       agent in
       let forecast = store.forecast(for: agent)!
@@ -26,8 +28,12 @@ extension NotchModel {
     return forecast.reset > now ? (forecast.window.usedPercent, forecast.reset) : (0, nil)
   }
 
-  @MainActor static func cards(store: UsageStore, now: Date = .now) -> [NotchCardData] {
-    rings(store: store, now: now).compactMap { card(store: store, agent: $0.agent, now: now) }
+  @MainActor static func cards(store: UsageStore, hiding hidden: Set<String> = [], now: Date = .now)
+    -> [NotchCardData]
+  {
+    rings(store: store, hiding: hidden, now: now).compactMap {
+      card(store: store, agent: $0.agent, now: now)
+    }
   }
 
   @MainActor static func card(store: UsageStore, agent: String, now: Date = .now) -> NotchCardData?
