@@ -5,7 +5,14 @@ import SwiftUI
 @Observable @MainActor final class NotchController {
   static let shared = NotchController()
 
-  private(set) var openAgent: String?
+  private(set) var openAgent: String? {
+    didSet { if (oldValue == NotchModel.memoryCard) != memoryCardOpen { watchMemory() } }
+  }
+  private var memoryCardOpen: Bool { openAgent == NotchModel.memoryCard }
+  /// Read while the memory card is open, so closed cards never walk the process table.
+  private(set) var memorySnapshot: MemorySnapshot?
+  /// Apps asked to quit; their rows dim until a reading no longer lists them.
+  private(set) var quitting: Set<String> = []
   // The panel is not part of a SwiftUI scene, so it has no openWindow action of its own.
   @ObservationIgnored var showDashboard: (() -> Void)?
   private(set) var disk: DiskSpace?
@@ -14,10 +21,16 @@ import SwiftUI
   private let readDisk: () -> DiskSpace?
   private let readMemory: () -> MemoryStats?
   private let openURL: (URL) -> Void
+  private let readSnapshot: @Sendable () async -> MemorySnapshot?
+  private let apps: RunningApps
+  private var memoryWatch: Task<Void, Never>?
   private var store: UsageStore?
   private var panel: NSPanel?
   private var agentCount = 0
   var ringCount: Int { agentCount + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1) }
+  // Stored, not read from `memory`: its readings change every few seconds, and the card
+  // stack must not rebuild the agents' charts each time.
+  private(set) var hasMemoryRing = false
   private var cardHeight: CGFloat?
   private var resizeStart: (scale: Double, mouseX: CGFloat)?
   var isResizing: Bool { resizeStart != nil }
@@ -31,12 +44,18 @@ import SwiftUI
     appearance: AppAppearance = .shared,
     readDisk: @escaping () -> DiskSpace? = DiskSpace.startupDisk,
     readMemory: @escaping () -> MemoryStats? = MemoryStats.system,
-    openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
+    openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
+    readSnapshot: @escaping @Sendable () async -> MemorySnapshot? = {
+      await Task.detached(priority: .userInitiated) { MemorySnapshot.read() }.value
+    },
+    apps: RunningApps = .workspace
   ) {
     self.appearance = appearance
     self.readDisk = readDisk
     self.readMemory = readMemory
     self.openURL = openURL
+    self.readSnapshot = readSnapshot
+    self.apps = apps
   }
 
   func attach(_ store: UsageStore) { self.store = store }
@@ -70,6 +89,34 @@ import SwiftUI
 
   func openActivityMonitor() {
     openURL(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+  }
+
+  func canQuit(_ consumer: MemoryConsumer) -> Bool {
+    consumer.bundlePath.map(apps.canQuit) ?? false
+  }
+
+  /// Asks the app to quit, like Quit in its menu: it can still ask to save or cancel.
+  func quit(_ consumer: MemoryConsumer) {
+    guard let path = consumer.bundlePath, apps.canQuit(path) else { return }
+    quitting.insert(consumer.id)
+    apps.quit(path)
+  }
+
+  private func watchMemory() {
+    memoryWatch?.cancel()
+    memoryWatch = nil
+    guard memoryCardOpen else { return }
+    memoryWatch = Task { [weak self, readSnapshot] in
+      while !Task.isCancelled {
+        let snapshot = await readSnapshot()
+        guard !Task.isCancelled, let self else { return }
+        if let snapshot {
+          memorySnapshot = snapshot
+          quitting.formIntersection(snapshot.consumers.map(\.id))
+        }
+        try? await Task.sleep(for: .seconds(2))
+      }
+    }
   }
 
   var hiddenAgents: Set<String> { appearance.hiddenNotchAgents }
@@ -133,12 +180,17 @@ import SwiftUI
     guard next?.drawn != memory?.drawn else { return }
     let resized = (next == nil) != (memory == nil)
     memory = next
+    if (next != nil) != hasMemoryRing { hasMemoryRing = next != nil }
+    if next == nil, memoryCardOpen {
+      cancelClose()
+      openAgent = nil
+    }
     if resized { place() }
   }
 
   func ringsChanged(_ agents: [String]) {
     agentCount = agents.count
-    if let openAgent, !agents.contains(openAgent) {
+    if let openAgent, openAgent != NotchModel.memoryCard, !agents.contains(openAgent) {
       cancelClose()
       self.openAgent = nil
     }
@@ -275,7 +327,6 @@ private struct NotchColumn: View {
   let disk: DiskSpace?
   let memory: MemoryStats?
   @State private var diskHovered = false
-  @State private var memoryHovered = false
   @State private var mouseY: CGFloat?
 
   var body: some View {
@@ -306,17 +357,13 @@ private struct NotchColumn: View {
       }
       if let memory {
         MemoryRing(
-          memory: memory, highlighted: memoryHovered, metrics: metrics,
-          onRemove: controller.hideMemory
+          memory: memory, highlighted: controller.openAgent == NotchModel.memoryCard,
+          metrics: metrics, onRemove: controller.hideMemory
         )
         .modifier(magnified(cells - 1, metrics))
-        .onHover { hovering in
-          memoryHovered = hovering
-          if hovering { controller.scheduleClose() }
-        }
+        .onHover { $0 ? controller.open(NotchModel.memoryCard) : controller.scheduleClose() }
         .onTapGesture { controller.openActivityMonitor() }
         .accessibilityAddTraits(.isButton)
-        .onDisappear { memoryHovered = false }
       }
     }
     .padding(.top, metrics.curl + metrics.padTop)
@@ -431,8 +478,23 @@ private struct NotchCardStack: View {
       ) { card in
         NotchCard(data: card).modifier(CardVisibility(agent: card.agent, controller: controller))
       }
+      if controller.hasMemoryRing {
+        MemoryCardHost(controller: controller)
+          .modifier(CardVisibility(agent: NotchModel.memoryCard, controller: controller))
+      }
     }
     .frame(width: NotchModel.cardWidth)
+  }
+}
+
+// Its own view, so a fresh memory reading every two seconds never rebuilds the agents' charts.
+private struct MemoryCardHost: View {
+  let controller: NotchController
+
+  var body: some View {
+    MemoryCard(
+      snapshot: controller.memorySnapshot, quitting: controller.quitting,
+      canQuit: controller.canQuit, onQuit: controller.quit)
   }
 }
 

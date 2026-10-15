@@ -71,6 +71,15 @@ enum NotchModel {
 
   static var largestCardHeight: CGFloat { cardHeight(hasSpend: true, modelCount: maxModels) }
 
+  /// The hover card of the memory ring shares `openAgent` with the agents' cards.
+  static let memoryCard = "memory"
+  static let memorySummaryHeight: CGFloat = 66
+  static let consumersTitleHeight: CGFloat = 20
+  static let consumerRowHeight: CGFloat = 32
+  static let memoryCardHeight =
+    2 * cardPadding + headerHeight + rowGap + memorySummaryHeight + rowGap + consumersTitleHeight
+    + CGFloat(MemorySnapshot.consumerLimit) * consumerRowHeight
+
   static func notchHeight(ringCount: Int) -> CGFloat {
     NotchMetrics(scale: 1).notchHeight(ringCount: ringCount)
   }
