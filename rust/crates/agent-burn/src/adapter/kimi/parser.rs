@@ -283,6 +283,7 @@ pub(super) fn kimi_entry_key(entry: &KimiUsageEntry) -> String {
 
 pub(super) fn kimi_entry_to_loaded(
     entry: KimiUsageEntry,
+    project_path: Option<Arc<str>>,
     tz: Option<&JiffTimeZone>,
     mode: CostMode,
     pricing: &PricingMap,
@@ -316,7 +317,7 @@ pub(super) fn kimi_entry_to_loaded(
         timestamp: entry.timestamp,
         project: Arc::from("kimi"),
         session_id: Arc::from(entry.session_id),
-        project_path: Arc::from("Kimi"),
+        project_path: project_path.unwrap_or_else(|| Arc::from("Kimi")),
         cost,
         extra_total_tokens: entry.extra_total_tokens,
         credits: None,
@@ -476,7 +477,7 @@ mod tests {
 
         let before_cost = calculate_kimi_cost(&before_cutoff, CostMode::Calculate, &pricing, usage);
         let at_cost = calculate_kimi_cost(&at_cutoff, CostMode::Calculate, &pricing, usage);
-        let loaded = kimi_entry_to_loaded(at_cutoff, None, CostMode::Calculate, &pricing);
+        let loaded = kimi_entry_to_loaded(at_cutoff, None, None, CostMode::Calculate, &pricing);
 
         assert!((before_cost - 0.000226).abs() < f64::EPSILON);
         assert!((at_cost - 0.00032035).abs() < f64::EPSILON);

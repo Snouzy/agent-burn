@@ -85,6 +85,19 @@ As a result:
 
 No cross-tree dedupe is needed, and agent-burn does not read `state.json`.
 
+### Workspaces
+
+`workspaces.json` in the data root maps each `{workDirKey}` to the folder the
+sessions ran in:
+
+```json
+{"version":1,"workspaces":{"wd_agent-burn_148663d55be9":{"root":"/Users/me/dev/agent-burn","name":"agent-burn"}}}
+```
+
+Kimi Code entries use that `root` as their project path, which feeds the
+`projects` breakdown in `summary --json`. An unknown key, a missing file, and
+the legacy tree fall back to the `Kimi` label and stay unattributed.
+
 ### Model aliases
 
 `model` is a Kimi Code alias. agent-burn resolves it through `config.toml`

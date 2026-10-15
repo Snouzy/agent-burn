@@ -6,6 +6,7 @@ use super::{
     config::KimiConfig,
     parser::{kimi_entry_key, kimi_entry_to_loaded, read_kimi_code_wire_file, read_wire_file},
     paths::{WireLayout, discover_wire_files},
+    workspaces::KimiWorkspaces,
 };
 
 pub(crate) fn load_entries(shared: &SharedArgs, pricing: &PricingMap) -> Result<Vec<LoadedEntry>> {
@@ -19,14 +20,20 @@ fn load_entries_inner(shared: &SharedArgs, pricing: &PricingMap) -> Result<Vec<L
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     let mut configs = HashMap::new();
+    let mut workspaces = HashMap::new();
     for file in discover_wire_files()? {
-        let file_entries = match file.layout {
-            WireLayout::Legacy => read_wire_file(&file.path)?,
+        let (file_entries, project_path) = match file.layout {
+            WireLayout::Legacy => (read_wire_file(&file.path)?, None),
             WireLayout::KimiCode => {
                 let config = configs
                     .entry(file.root.clone())
                     .or_insert_with(|| KimiConfig::load(&file.root));
-                read_kimi_code_wire_file(&file, config)?
+                let entries = read_kimi_code_wire_file(&file, config)?;
+                let project_path = workspaces
+                    .entry(file.root.clone())
+                    .or_insert_with(|| KimiWorkspaces::load(&file.root))
+                    .project_path(&file);
+                (entries, project_path)
             }
         };
         for entry in file_entries {
@@ -34,6 +41,7 @@ fn load_entries_inner(shared: &SharedArgs, pricing: &PricingMap) -> Result<Vec<L
             if seen.insert(key) {
                 entries.push(kimi_entry_to_loaded(
                     entry,
+                    project_path.clone(),
                     tz.as_ref(),
                     shared.mode,
                     pricing,
@@ -252,6 +260,34 @@ mod tests {
             entries
                 .iter()
                 .all(|entry| entry.missing_pricing_model.is_none())
+        );
+    }
+
+    #[test]
+    fn maps_kimi_code_workspace_keys_to_project_roots() {
+        let fixture = fs_fixture!({
+            "workspaces.json": r#"{"version":1,"workspaces":{"wd_app_148663d55be9":{"root":"/dev/app","name":"app"}}}"#,
+            "sessions/wd_app_148663d55be9/session_a/agents/main/wire.jsonl": r#"{"type":"usage.record","agentId":"main","model":"kimi-k2","usage":{"inputOther":10,"output":1,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1779256800000}"#,
+        });
+        let entries = kimi_code_entries(&fixture);
+
+        assert_eq!(entries[0].project_path.as_ref(), "/dev/app");
+    }
+
+    #[test]
+    fn falls_back_to_kimi_for_unknown_workspaces_and_legacy_sessions() {
+        let fixture = fs_fixture!({
+            "workspaces.json": r#"{"version":1,"workspaces":{"wd_app_148663d55be9":{"root":"/dev/app","name":"app"}}}"#,
+            "sessions/wd_other_000000000000/session_a/agents/main/wire.jsonl": r#"{"type":"usage.record","agentId":"main","model":"kimi-k2","usage":{"inputOther":10,"output":1,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1779256800000}"#,
+            "sessions/wd_app_148663d55be9/session_b/wire.jsonl": r#"{"timestamp":1770983427.123,"message":{"type":"StatusUpdate","payload":{"token_usage":{"input_other":100,"output":50,"input_cache_read":0,"input_cache_creation":0},"message_id":"msg-1"}}}"#,
+        });
+        let entries = kimi_code_entries(&fixture);
+
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.project_path.as_ref() == "Kimi")
         );
     }
 

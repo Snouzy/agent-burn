@@ -4,6 +4,7 @@ mod loader;
 mod parser;
 mod paths;
 mod report;
+mod workspaces;
 
 pub(crate) use limits::{load_account, usage_limits};
 pub(crate) use loader::load_entries;
