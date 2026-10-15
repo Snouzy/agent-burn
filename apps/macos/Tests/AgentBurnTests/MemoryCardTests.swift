@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 import Testing
 
@@ -172,6 +173,84 @@ private let snapshot = MemorySnapshot(
   #expect(MemoryStats.label(bytes: 9_210_000_000, locale: us) == "8.6 GB")
   #expect(MemoryStats.label(bytes: 560 * 1_048_576, locale: us) == "560 MB")
   #expect(MemoryStats.label(bytes: gib - 1_048_576, locale: us) == "1.0 GB")
+}
+
+@Test func notchCardsCenterOnTheirRingWithinTheNotchAndThePanel() {
+  let screen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+  let heights = [NotchModel.memoryCardHeight, NotchModel.largestCardHeight, 200]
+  for scale in [0.7, 1, 1.4] {
+    let metrics = NotchMetrics(scale: scale)
+    for rings in 1...6 {
+      let panel = metrics.panelFrame(screen: screen, ringCount: rings)
+      let notch = metrics.notchHeight(ringCount: rings)
+      let notchTop = panel.midY + notch / 2 - metrics.curl
+      let notchBottom = panel.midY - notch / 2 + metrics.curl
+      for cell in 0..<rings {
+        for height in heights {
+          let offset = metrics.cardOffset(height: height, cell: cell, ringCount: rings)
+          let card = NotchModel.cardRect(panel: panel, height: height, offset: offset)
+          let ring = panel.midY + notch / 2 - metrics.cellCenter(cell)
+          let at = "\(scale)× ring \(cell + 1)/\(rings), card \(height) pt"
+          #expect(card.minY >= panel.minY - 0.001 && card.maxY <= panel.maxY + 0.001, "\(at)")
+          // Centered on its ring, unless that pushes it past the notch's edge or the panel's.
+          let edges = [notchTop, notchBottom, panel.minY, panel.maxY]
+          let centered = abs(card.midY - ring) < 0.001
+          let pinned = edges.contains { abs(card.maxY - $0) < 0.001 || abs(card.minY - $0) < 0.001 }
+          #expect(centered || pinned, "\(at)")
+          let rects = metrics.interactiveRects(
+            panel: panel, ringCount: rings, cardHeight: height, cardOffset: offset)
+          #expect(rects.last == card)
+        }
+      }
+      // The first ring's card hangs from the top, the last one's stands on the bottom.
+      let height = NotchModel.memoryCardHeight
+      let first = metrics.cardOffset(height: height, cell: 0, ringCount: rings)
+      let last = metrics.cardOffset(height: height, cell: rings - 1, ringCount: rings)
+      #expect(first <= last)
+    }
+  }
+}
+
+private final class Flag: @unchecked Sendable {
+  private let lock = NSLock()
+  private var raised = false
+  var value: Bool { lock.withLock { raised } }
+  func set() { lock.withLock { raised = true } }
+}
+
+@MainActor private final class ChangingMemory {
+  var available: Int64 = 9_000_000_000
+  func read() -> MemoryStats? {
+    MemoryStats(available: available, total: 34_359_738_368, pressure: .normal)
+  }
+}
+
+@Test @MainActor func notchCardsDoNotObserveEachMemoryReading() {
+  let suite = "AgentBurn.memory.observe.\(UUID().uuidString)"
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  let appearance = AppAppearance(defaults: UserDefaults(suiteName: suite)!, applyPolicy: { _ in })
+  appearance.showsMemory = true
+  let memory = ChangingMemory()
+  let controller = NotchController(appearance: appearance, readMemory: memory.read)
+  controller.ringsChanged(["codex", "claude"])
+  controller.refreshMemory()
+  let invalidated = Flag()
+  withObservationTracking {
+    _ = controller.cardOffset(for: "claude", height: NotchModel.largestCardHeight)
+    _ = controller.cardOffset(for: NotchModel.memoryCard, height: NotchModel.memoryCardHeight)
+    _ = controller.hasMemoryRing
+  } onChange: {
+    invalidated.set()
+  }
+
+  memory.available = 5_000_000_000
+  controller.refreshMemory()
+  #expect(controller.memory?.available == 5_000_000_000, "The ring took the new reading")
+  #expect(!invalidated.value, "Same ring layout, so the cards keep their charts")
+
+  appearance.showsMemory = false
+  controller.refreshMemory()
+  #expect(invalidated.value, "A ring leaving the notch moves the cards")
 }
 
 @Test func memoryLabelsSwitchToGigabytesBeforeAThousandMegabytes() {

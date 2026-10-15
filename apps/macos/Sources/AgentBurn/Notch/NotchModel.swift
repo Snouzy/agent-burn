@@ -100,8 +100,9 @@ enum NotchModel {
     }
   }
 
-  static func cardRect(panel: CGRect, height: CGFloat) -> CGRect {
-    CGRect(x: panel.minX, y: panel.midY - height / 2, width: cardWidth, height: height)
+  /// `offset` moves the card down from the panel's middle, as SwiftUI's `.offset(y:)` does.
+  static func cardRect(panel: CGRect, height: CGFloat, offset: CGFloat = 0) -> CGRect {
+    CGRect(x: panel.minX, y: panel.midY - height / 2 - offset, width: cardWidth, height: height)
   }
 
   static func interactiveRects(panel: CGRect, ringCount: Int, cardHeight: CGFloat?) -> [CGRect] {
@@ -151,7 +152,9 @@ struct NotchMetrics: Equatable, Sendable {
       x: screen.maxX - width, y: screen.midY - height / 2, width: width, height: height)
   }
 
-  func interactiveRects(panel: CGRect, ringCount: Int, cardHeight: CGFloat?) -> [CGRect] {
+  func interactiveRects(
+    panel: CGRect, ringCount: Int, cardHeight: CGFloat?, cardOffset: CGFloat = 0
+  ) -> [CGRect] {
     guard ringCount > 0 else { return [] }
     let height = notchHeight(ringCount: ringCount)
     // The flares at both ends are mostly transparent: let clicks through there.
@@ -159,7 +162,22 @@ struct NotchMetrics: Equatable, Sendable {
       x: panel.maxX - notchDepth, y: panel.midY - height / 2, width: notchDepth, height: height
     )
     .insetBy(dx: 0, dy: curl)
-    return [notch] + (cardHeight.map { [NotchModel.cardRect(panel: panel, height: $0)] } ?? [])
+    return [notch]
+      + (cardHeight.map { [NotchModel.cardRect(panel: panel, height: $0, offset: cardOffset)] }
+        ?? [])
+  }
+
+  /// How far a ring's card moves down from the panel's middle: it centers on its ring, slides
+  /// back to stay within the notch's straight edge, and never leaves the panel.
+  func cardOffset(height: CGFloat, cell index: Int, ringCount: Int) -> CGFloat {
+    let notch = notchHeight(ringCount: ringCount)
+    let ring = cellCenter(index) - notch / 2
+    // Top aligned with the notch's straight edge, then bottom aligned; swapped for a tall card.
+    let top = -notch / 2 + curl + height / 2
+    let bottom = notch / 2 - curl - height / 2
+    let inNotch = min(max(ring, min(top, bottom)), max(top, bottom))
+    let room = max((max(notch, NotchModel.largestCardHeight) - height) / 2, 0)
+    return min(max(inNotch, -room), room)
   }
 
   /// The vertical center of a ring cell, from the top of the notch.

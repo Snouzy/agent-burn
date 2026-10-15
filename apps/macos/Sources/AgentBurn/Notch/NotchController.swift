@@ -9,6 +9,10 @@ import SwiftUI
     didSet { if (oldValue == NotchModel.memoryCard) != memoryCardOpen { watchMemory() } }
   }
   private var memoryCardOpen: Bool { openAgent == NotchModel.memoryCard }
+  private var cardOffset: CGFloat {
+    guard let openAgent, let cardHeight else { return 0 }
+    return cardOffset(for: openAgent, height: cardHeight)
+  }
   /// Read while the memory card is open, so closed cards never walk the process table.
   private(set) var memorySnapshot: MemorySnapshot?
   /// Apps asked to quit; their rows dim until a reading no longer lists them.
@@ -26,11 +30,26 @@ import SwiftUI
   private var memoryWatch: Task<Void, Never>?
   private var store: UsageStore?
   private var panel: NSPanel?
-  private var agentCount = 0
-  var ringCount: Int { agentCount + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1) }
-  // Stored, not read from `memory`: its readings change every few seconds, and the card
-  // stack must not rebuild the agents' charts each time.
+  /// The agents' rings top to bottom; the disk and memory rings follow them.
+  private var agents: [String] = []
+  // Stored, not computed from `disk` and `memory`: their readings change every few seconds,
+  // and the cards that place themselves with these must not rebuild their charts each time.
+  private(set) var ringCount = 0
   private(set) var hasMemoryRing = false
+
+  private func updateRings() {
+    let count = agents.count + (disk == nil ? 0 : 1) + (memory == nil ? 0 : 1)
+    if count != ringCount { ringCount = count }
+    if (memory != nil) != hasMemoryRing { hasMemoryRing = memory != nil }
+  }
+
+  /// Where a card sits next to its ring. Plain arithmetic on the ring layout, so it only
+  /// changes with the rings or the notch size, never with the pointer.
+  func cardOffset(for agent: String, height: CGFloat) -> CGFloat {
+    let cell = agent == NotchModel.memoryCard ? ringCount - 1 : agents.firstIndex(of: agent)
+    guard let cell else { return 0 }
+    return metrics.cardOffset(height: height, cell: cell, ringCount: ringCount)
+  }
   private var cardHeight: CGFloat?
   private var resizeStart: (scale: Double, mouseX: CGFloat)?
   var isResizing: Bool { resizeStart != nil }
@@ -172,6 +191,7 @@ import SwiftUI
     guard next?.drawn != disk?.drawn else { return }
     let resized = (next == nil) != (disk == nil)
     disk = next
+    updateRings()
     if resized { place() }
   }
 
@@ -180,7 +200,7 @@ import SwiftUI
     guard next?.drawn != memory?.drawn else { return }
     let resized = (next == nil) != (memory == nil)
     memory = next
-    if (next != nil) != hasMemoryRing { hasMemoryRing = next != nil }
+    updateRings()
     if next == nil, memoryCardOpen {
       cancelClose()
       openAgent = nil
@@ -189,7 +209,8 @@ import SwiftUI
   }
 
   func ringsChanged(_ agents: [String]) {
-    agentCount = agents.count
+    if agents != self.agents { self.agents = agents }
+    updateRings()
     if let openAgent, openAgent != NotchModel.memoryCard, !agents.contains(openAgent) {
       cancelClose()
       self.openAgent = nil
@@ -275,13 +296,16 @@ import SwiftUI
     guard let panel else { return }
     let mouse = NSEvent.mouseLocation
     let rects = metrics.interactiveRects(
-      panel: panel.frame, ringCount: ringCount, cardHeight: cardHeight)
+      panel: panel.frame, ringCount: ringCount, cardHeight: cardHeight, cardOffset: cardOffset)
     // A drag can outrun the grabber; the panel must keep the mouse until it ends.
     let inside = isResizing || rects.contains { $0.contains(mouse) }
     if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
     guard openAgent != nil else { return }
     // SwiftUI can miss a hover change when ignoresMouseEvents flips on the same event.
-    if let cardHeight, NotchModel.cardRect(panel: panel.frame, height: cardHeight).contains(mouse) {
+    if let cardHeight,
+      NotchModel.cardRect(panel: panel.frame, height: cardHeight, offset: cardOffset)
+        .contains(mouse)
+    {
       cancelClose()
     } else if !inside {
       scheduleClose()
@@ -476,10 +500,21 @@ private struct NotchCardStack: View {
       ForEach(
         NotchModel.cards(store: store, hiding: controller.hiddenAgents, now: now), id: \.agent
       ) { card in
-        NotchCard(data: card).modifier(CardVisibility(agent: card.agent, controller: controller))
+        NotchCard(data: card)
+          .offset(
+            y: controller.cardOffset(
+              for: card.agent,
+              height: NotchModel.cardHeight(
+                hasSpend: card.spend != nil, modelCount: card.models.count))
+          )
+          .modifier(CardVisibility(agent: card.agent, controller: controller))
       }
       if controller.hasMemoryRing {
         MemoryCardHost(controller: controller)
+          .offset(
+            y: controller.cardOffset(
+              for: NotchModel.memoryCard, height: NotchModel.memoryCardHeight)
+          )
           .modifier(CardVisibility(agent: NotchModel.memoryCard, controller: controller))
       }
     }
