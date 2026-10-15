@@ -15,6 +15,7 @@ mod output;
 mod pricing;
 mod progress;
 mod project_names;
+mod project_root;
 mod summary;
 mod types;
 mod utils;
