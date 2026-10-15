@@ -35,6 +35,29 @@ import SwiftUI
     }
   }
 
+  var showsMemory: Bool {
+    didSet {
+      defaults.set(showsMemory, forKey: "showsMemory")
+      onNotchChange?(showsNotch)
+    }
+  }
+
+  var notchScale: Double {
+    didSet {
+      defaults.set(notchScale, forKey: "notchScale")
+      onNotchChange?(showsNotch)
+    }
+  }
+
+  // Magnification only changes how the rings draw, so it never moves the panel.
+  var magnifiesNotch: Bool {
+    didSet { defaults.set(magnifiesNotch, forKey: "magnifiesNotch") }
+  }
+
+  var magnification: Double {
+    didSet { defaults.set(magnification, forKey: "magnification") }
+  }
+
   var onNotchChange: ((Bool) -> Void)?
 
   init(
@@ -49,6 +72,10 @@ import SwiftUI
     showsNotch = defaults.bool(forKey: "showsNotch")
     notchDisplay = defaults.string(forKey: "notchDisplay")
     showsDiskSpace = defaults.bool(forKey: "showsDiskSpace")
+    showsMemory = defaults.bool(forKey: "showsMemory")
+    notchScale = defaults.object(forKey: "notchScale") as? Double ?? 1
+    magnifiesNotch = defaults.bool(forKey: "magnifiesNotch")
+    magnification = defaults.object(forKey: "magnification") as? Double ?? 0.25
   }
 
   func apply() { applyPolicy(menuBarOnly ? .accessory : .regular) }
@@ -117,6 +144,36 @@ struct AppearanceSettings: View {
       Toggle("Show free disk space", isOn: $appearance.showsDiskSpace)
         .disabled(!appearance.showsNotch)
       Text("Adds a ring with the free space on your startup disk.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("Show available memory", isOn: $appearance.showsMemory)
+        .disabled(!appearance.showsNotch)
+      Text("Adds a ring with the available RAM, colored by memory pressure.")
+        .font(.caption).foregroundStyle(.secondary)
+      LabeledContent("Size") {
+        Slider(value: $appearance.notchScale, in: NotchMetrics.scales) {
+          Text("Size")
+        } minimumValueLabel: {
+          Text("Small")
+        } maximumValueLabel: {
+          Text("Large")
+        }
+        .labelsHidden()
+      }
+      .disabled(!appearance.showsNotch)
+      Text("You can also drag the handle at the bottom of the notch, like the Dock separator.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("Magnification", isOn: $appearance.magnifiesNotch)
+        .disabled(!appearance.showsNotch)
+      Slider(value: $appearance.magnification, in: 0.1...0.4) {
+        Text("Magnification")
+      } minimumValueLabel: {
+        Text("Small")
+      } maximumValueLabel: {
+        Text("Large")
+      }
+      .labelsHidden()
+      .disabled(!appearance.showsNotch || !appearance.magnifiesNotch)
+      Text("Rings grow as the pointer passes over them, like Dock icons.")
         .font(.caption).foregroundStyle(.secondary)
     }
   }

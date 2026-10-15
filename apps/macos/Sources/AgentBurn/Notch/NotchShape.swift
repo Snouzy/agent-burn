@@ -5,9 +5,11 @@ import SwiftUI
 /// ends that flare back out to the edge so it reads as part of the bezel rather
 /// than a floating panel. `rect.maxX` is the screen edge.
 struct NotchShape: Shape {
+  var metrics = NotchMetrics(scale: 1)
+
   func path(in rect: CGRect) -> Path {
-    let curl = NotchModel.curl
-    let corner = max(0, min(NotchModel.corner, rect.width / 2, (rect.height - 2 * curl) / 2))
+    let curl = metrics.curl
+    let corner = max(0, min(metrics.corner, rect.width / 2, (rect.height - 2 * curl) / 2))
     let flare = max(0, min(curl, rect.width - corner))
     var path = Path()
     path.move(to: CGPoint(x: rect.maxX, y: rect.minY))

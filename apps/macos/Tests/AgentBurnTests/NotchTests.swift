@@ -774,3 +774,229 @@ private final class DiskReader {
       != store.samples(for: "codex", range: .week, now: wall))
   #expect(card.samples == store.samples(for: "codex", range: card.range, now: now))
 }
+
+@Test func notchMemoryPressureFollowsTheKernelLevels() {
+  #expect(MemoryStats.pressure(level: 1) == .normal)
+  #expect(MemoryStats.pressure(level: 2) == .warning)
+  #expect(MemoryStats.pressure(level: 4) == .critical)
+}
+
+@Test func notchMemoryReadsTheSystemLikeFoundation() throws {
+  let memory = try #require(MemoryStats.system())
+  #expect(memory.total == Int64(ProcessInfo.processInfo.physicalMemory))
+  #expect(memory.available > 0 && memory.available < memory.total)
+}
+
+@Test func notchMemoryVoiceOverNamesAvailableTotalAndPressure() {
+  let memory = MemoryStats(available: 9_200_000_000, total: 34_359_738_368, pressure: .warning)
+  #expect(
+    memory.voiceOverLabel(locale: Locale(identifier: "en_US"))
+      == "Memory, 9.2 gigabytes available of 34 gigabytes, warning pressure")
+}
+
+private let nineGB = MemoryStats(available: 9_200_000_000, total: 34_359_738_368, pressure: .normal)
+
+private final class MemoryReader {
+  var reading: MemoryStats? = nineGB
+  private(set) var reads = 0
+  func read() -> MemoryStats? {
+    reads += 1
+    return reading
+  }
+}
+
+@Test @MainActor func notchMemorySwitchDefaultsOffAndPersists() throws {
+  let suite = "AgentBurn.notch.memory.\(UUID().uuidString)"
+  let defaults = try #require(UserDefaults(suiteName: suite))
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let appearance = AppAppearance(defaults: defaults, applyPolicy: { _ in })
+  var changes: [Bool] = []
+  appearance.onNotchChange = { changes.append($0) }
+  #expect(!appearance.showsMemory)
+  appearance.showsMemory = true
+  #expect(AppAppearance(defaults: defaults, applyPolicy: { _ in }).showsMemory)
+  #expect(changes == [false])
+}
+
+@Test @MainActor func notchRingCountAddsTheMemoryRingNextToTheDiskRing() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: true)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  appearance.showsMemory = true
+  let reader = MemoryReader()
+  let controller = NotchController(
+    appearance: appearance, readDisk: DiskReader().read, readMemory: reader.read)
+  controller.ringsChanged(["codex"])
+  controller.refreshDisk()
+  controller.refreshMemory()
+  #expect(controller.ringCount == 3)
+  appearance.showsMemory = false
+  controller.refreshMemory()
+  #expect(controller.ringCount == 2)
+  appearance.showsMemory = true
+  reader.reading = nil
+  controller.refreshMemory()
+  #expect(controller.ringCount == 2)
+}
+
+@Test @MainActor func notchStoreTickRereadsTheMemory() throws {
+  let (store, suite, directory) = notchStoreFixture()
+  let (appearance, appearanceSuite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer {
+    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+    UserDefaults(suiteName: appearanceSuite)?.removePersistentDomain(forName: appearanceSuite)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  appearance.showsMemory = true
+  let reader = MemoryReader()
+  let controller = NotchController(appearance: appearance, readMemory: reader.read)
+  controller.apply(true)
+  let host = NSHostingView(rootView: NotchRoot(controller: controller, store: store))
+  host.frame = CGRect(
+    x: 0, y: 0, width: NotchModel.cardWidth + NotchModel.cardGap + NotchModel.notchDepth,
+    height: NotchModel.largestCardHeight)
+  host.layoutSubtreeIfNeeded()
+  #expect(reader.reads == 1)
+
+  reader.reading = MemoryStats(available: 2_000_000_000, total: 34_359_738_368, pressure: .critical)
+  store.quotaCheckDate.addTimeInterval(5)
+  host.layoutSubtreeIfNeeded()
+  #expect(reader.reads == 2)
+  #expect(controller.memory == reader.reading)
+}
+
+@Test @MainActor func notchMemoryPressureChangeRedrawsEvenWithTheSameAmount() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  appearance.showsMemory = true
+  let reader = MemoryReader()
+  let controller = NotchController(appearance: appearance, readMemory: reader.read)
+  controller.refreshMemory()
+  reader.reading = MemoryStats(available: 9_210_000_000, total: 34_359_738_368, pressure: .normal)
+  controller.refreshMemory()
+  #expect(controller.memory == nineGB)
+  reader.reading = MemoryStats(available: 9_210_000_000, total: 34_359_738_368, pressure: .warning)
+  controller.refreshMemory()
+  #expect(controller.memory == reader.reading)
+}
+
+@Test @MainActor func notchMemoryClickOpensActivityMonitor() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  var opened: [URL] = []
+  let controller = NotchController(appearance: appearance, openURL: { opened.append($0) })
+  controller.openActivityMonitor()
+  #expect(opened.map(\.path) == ["/System/Applications/Utilities/Activity Monitor.app"])
+}
+
+@Test @MainActor func notchMemoryWidestLabelFitsTheNotch() throws {
+  let cell = NotchModel.ringDiameter + NotchModel.labelGap + NotchModel.percentLine
+  for available: Int64 in [9_940_000_000, 137_000_000_000, 512_000_000_000] {
+    let ring = MemoryRing(
+      memory: MemoryStats(available: available, total: 549_755_813_888, pressure: .normal),
+      highlighted: false
+    )
+    .environment(\.locale, Locale(identifier: "en_US"))
+    let size = try #require(ImageRenderer(content: ring.fixedSize()).nsImage?.size)
+    #expect(size.width <= NotchModel.notchDepth, "\(available) bytes: \(size.width) pt wide")
+    #expect(size.height == cell)
+  }
+}
+
+@Test func notchMetricsAtOneMatchTheBaseGeometry() {
+  let metrics = NotchMetrics(scale: 1)
+  #expect(metrics.ringDiameter == NotchModel.ringDiameter)
+  #expect(metrics.notchDepth == NotchModel.notchDepth)
+  #expect(metrics.notchHeight(ringCount: 3) == NotchModel.notchHeight(ringCount: 3))
+  #expect(
+    metrics.panelFrame(screen: notchScreen, ringCount: 2)
+      == NotchModel.panelFrame(screen: notchScreen, ringCount: 2))
+}
+
+@Test func notchMetricsScaleTheNotchButNotTheCard() {
+  let metrics = NotchMetrics(scale: 1.2)
+  #expect(metrics.ringDiameter == NotchModel.ringDiameter * 1.2)
+  #expect(
+    abs(metrics.notchHeight(ringCount: 3) - NotchModel.notchHeight(ringCount: 3) * 1.2) < 0.001)
+  let panel = metrics.panelFrame(screen: notchScreen, ringCount: 3)
+  #expect(panel.width == NotchModel.cardWidth + NotchModel.cardGap + NotchModel.notchDepth * 1.2)
+  #expect(panel.maxX == notchScreen.maxX)
+  let notch = metrics.interactiveRects(panel: panel, ringCount: 3, cardHeight: nil)[0]
+  #expect(notch.width == metrics.notchDepth)
+}
+
+@Test func notchMetricsClampTheScale() {
+  #expect(Double(NotchMetrics(scale: 0.2).scale) == NotchMetrics.scales.lowerBound)
+  #expect(Double(NotchMetrics(scale: 9).scale) == NotchMetrics.scales.upperBound)
+}
+
+@Test func notchDragAwayFromTheEdgeGrowsLikeTheDock() {
+  let grown = NotchMetrics.dragScale(start: 1, startX: 1000, mouseX: 986)
+  #expect(abs(grown - 1.2) < 0.0001)
+  #expect(NotchMetrics.dragScale(start: 1, startX: 1000, mouseX: 1014) < 1)
+  #expect(
+    NotchMetrics.dragScale(start: 1, startX: 1000, mouseX: 0) == NotchMetrics.scales.upperBound)
+  #expect(
+    NotchMetrics.dragScale(start: 1, startX: 0, mouseX: 1000) == NotchMetrics.scales.lowerBound)
+}
+
+@Test func notchMagnificationPeaksUnderTheCursorAndFadesWithDistance() {
+  let metrics = NotchMetrics(scale: 1)
+  let center = metrics.cellCenter(1)
+  #expect(metrics.magnification(cell: 1, mouseY: center, amount: 0.3) == 1.3)
+  let neighbour = metrics.magnification(cell: 0, mouseY: center, amount: 0.3)
+  #expect(neighbour > 1 && neighbour < 1.3)
+  #expect(metrics.magnification(cell: 3, mouseY: center, amount: 0.3) == 1)
+  #expect(metrics.magnification(cell: 1, mouseY: nil, amount: 0.3) == 1)
+}
+
+@Test @MainActor func notchSizeSettingsDefaultLikeTheDockAndPersist() throws {
+  let suite = "AgentBurn.notch.size.\(UUID().uuidString)"
+  let defaults = try #require(UserDefaults(suiteName: suite))
+  defer { defaults.removePersistentDomain(forName: suite) }
+  let appearance = AppAppearance(defaults: defaults, applyPolicy: { _ in })
+  var changes = 0
+  appearance.onNotchChange = { _ in changes += 1 }
+  #expect(appearance.notchScale == 1)
+  #expect(!appearance.magnifiesNotch)
+  #expect(appearance.magnification == 0.25)
+  appearance.notchScale = 1.3
+  appearance.magnifiesNotch = true
+  appearance.magnification = 0.4
+  let reloaded = AppAppearance(defaults: defaults, applyPolicy: { _ in })
+  #expect(reloaded.notchScale == 1.3)
+  #expect(reloaded.magnifiesNotch)
+  #expect(reloaded.magnification == 0.4)
+  #expect(changes == 1, "only the size moves the panel")
+}
+
+@Test @MainActor func notchResizeDragUpdatesTheSizeAndBlocksTheCard() {
+  let (appearance, suite) = notchAppearanceFixture(showsDiskSpace: false)
+  defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+  let controller = NotchController(appearance: appearance)
+  controller.beginResize(mouseX: 1000)
+  controller.resize(mouseX: 986)
+  #expect(abs(appearance.notchScale - 1.2) < 0.0001)
+  #expect(controller.metrics.scale == CGFloat(appearance.notchScale))
+  controller.open("codex")
+  #expect(controller.openAgent == nil)
+  controller.endResize()
+  controller.resize(mouseX: 900)
+  #expect(abs(appearance.notchScale - 1.2) < 0.0001, "no drag in progress")
+  controller.open("codex")
+  #expect(controller.openAgent == "codex")
+}
+
+@Test @MainActor func notchRingsFitTheNotchAtEveryScale() throws {
+  for scale in [NotchMetrics.scales.lowerBound, NotchMetrics.scales.upperBound] {
+    let metrics = NotchMetrics(scale: scale)
+    let cell = metrics.ringDiameter + metrics.labelGap + metrics.percentLine
+    let ring = DiskRing(
+      disk: DiskSpace(free: 999_400_000_000, total: 8_000_000_000_000), highlighted: false,
+      metrics: metrics
+    )
+    .environment(\.locale, Locale(identifier: "en_US"))
+    let size = try #require(ImageRenderer(content: ring.fixedSize()).nsImage?.size)
+    #expect(size.width <= metrics.notchDepth, "\(scale)×: \(size.width) pt wide")
+    #expect(abs(size.height - cell) < 1, "\(scale)×: \(size.height) pt tall")
+  }
+}

@@ -70,17 +70,12 @@ enum NotchModel {
   static var largestCardHeight: CGFloat { cardHeight(hasSpend: true, modelCount: maxModels) }
 
   static func notchHeight(ringCount: Int) -> CGFloat {
-    let cells = CGFloat(max(ringCount, 1))
-    let cell = ringDiameter + labelGap + percentLine
-    return 2 * curl + padTop + cells * cell + (cells - 1) * cellSpacing + padBottom
+    NotchMetrics(scale: 1).notchHeight(ringCount: ringCount)
   }
 
   // Screen coordinates, the space of NSEvent.mouseLocation.
   static func panelFrame(screen: CGRect, ringCount: Int) -> CGRect {
-    let width = cardWidth + cardGap + notchDepth
-    let height = max(notchHeight(ringCount: ringCount), largestCardHeight)
-    return CGRect(
-      x: screen.maxX - width, y: screen.midY - height / 2, width: width, height: height)
+    NotchMetrics(scale: 1).panelFrame(screen: screen, ringCount: ringCount)
   }
 
   static func screen<S>(
@@ -99,6 +94,48 @@ enum NotchModel {
   }
 
   static func interactiveRects(panel: CGRect, ringCount: Int, cardHeight: CGFloat?) -> [CGRect] {
+    NotchMetrics(scale: 1).interactiveRects(
+      panel: panel, ringCount: ringCount, cardHeight: cardHeight)
+  }
+}
+
+/// The notch geometry at the size the user picked, like the Dock's size slider.
+/// The hover card keeps its own fixed size.
+struct NotchMetrics: Equatable, Sendable {
+  static let scales: ClosedRange<Double> = 0.7...1.4
+
+  let scale: CGFloat
+
+  init(scale: Double) {
+    self.scale = CGFloat(min(max(scale, Self.scales.lowerBound), Self.scales.upperBound))
+  }
+
+  var ringDiameter: CGFloat { NotchModel.ringDiameter * scale }
+  var notchDepth: CGFloat { NotchModel.notchDepth * scale }
+  var curl: CGFloat { NotchModel.curl * scale }
+  var corner: CGFloat { NotchModel.corner * scale }
+  var padTop: CGFloat { NotchModel.padTop * scale }
+  var padBottom: CGFloat { NotchModel.padBottom * scale }
+  var cellSpacing: CGFloat { NotchModel.cellSpacing * scale }
+  var labelGap: CGFloat { NotchModel.labelGap * scale }
+  var percentLine: CGFloat { NotchModel.percentLine * scale }
+  var labelSize: CGFloat { 14 * scale }
+  var iconSize: CGFloat { 17 * scale }
+  private var cell: CGFloat { ringDiameter + labelGap + percentLine }
+
+  func notchHeight(ringCount: Int) -> CGFloat {
+    let cells = CGFloat(max(ringCount, 1))
+    return 2 * curl + padTop + cells * cell + (cells - 1) * cellSpacing + padBottom
+  }
+
+  func panelFrame(screen: CGRect, ringCount: Int) -> CGRect {
+    let width = NotchModel.cardWidth + NotchModel.cardGap + notchDepth
+    let height = max(notchHeight(ringCount: ringCount), NotchModel.largestCardHeight)
+    return CGRect(
+      x: screen.maxX - width, y: screen.midY - height / 2, width: width, height: height)
+  }
+
+  func interactiveRects(panel: CGRect, ringCount: Int, cardHeight: CGFloat?) -> [CGRect] {
     guard ringCount > 0 else { return [] }
     let height = notchHeight(ringCount: ringCount)
     // The flares at both ends are mostly transparent: let clicks through there.
@@ -106,6 +143,24 @@ enum NotchModel {
       x: panel.maxX - notchDepth, y: panel.midY - height / 2, width: notchDepth, height: height
     )
     .insetBy(dx: 0, dy: curl)
-    return [notch] + (cardHeight.map { [cardRect(panel: panel, height: $0)] } ?? [])
+    return [notch] + (cardHeight.map { [NotchModel.cardRect(panel: panel, height: $0)] } ?? [])
+  }
+
+  /// The vertical center of a ring cell, from the top of the notch.
+  func cellCenter(_ index: Int) -> CGFloat {
+    curl + padTop + CGFloat(index) * (cell + cellSpacing) + cell / 2
+  }
+
+  /// Like the Dock: the ring under the cursor grows by `amount`, its neighbours by less.
+  func magnification(cell index: Int, mouseY: CGFloat?, amount: Double) -> CGFloat {
+    guard let mouseY else { return 1 }
+    let reach = 1.5 * (cell + cellSpacing)
+    let distance = min(abs(mouseY - cellCenter(index)) / reach, 1)
+    return 1 + CGFloat(amount) * (1 + cos(distance * .pi)) / 2
+  }
+
+  /// Dragging the grabber away from the screen edge grows the notch, like the Dock separator.
+  static func dragScale(start: Double, startX: CGFloat, mouseX: CGFloat) -> Double {
+    NotchMetrics(scale: start + Double(startX - mouseX) / NotchModel.notchDepth).scale.native
   }
 }
