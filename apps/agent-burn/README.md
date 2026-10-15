@@ -32,7 +32,7 @@ agent-burn summary --json
 agent-burn summary --json --jq '.projects[:5]'
 ```
 
-`summary --json` includes `projects`: cost per git repository for Claude Code, Codex, and Kimi Code, based on the files each request worked on. Worktrees count toward their repository, and work outside any repository is grouped as `Scratch`.
+`summary --json` includes `projects`: cost per git repository for Claude Code, Codex, and Kimi Code, based on the files each request worked on. Worktrees count toward their repository, a working folder without git counts as its own project, and work in home, temp, or folders full of repositories is grouped as `Scratch`.
 
 macOS app: menu-bar quota for Codex, Claude, Kimi Code, and Cursor, plus a dashboard across detected harnesses. Build locally with `just macos::run`. Details: [apps/macos](https://github.com/Melvynx/agent-burn/tree/main/apps/macos).
 

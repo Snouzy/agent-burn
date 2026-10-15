@@ -3,7 +3,8 @@
 //! Paths are normalized lexically and checked ancestor by ancestor, so sessions
 //! whose folders were deleted since still land on the repository above them.
 //! Linked worktrees resolve to their main repository through `commondir`.
-//! Locations outside any repository are not projects.
+//! A working folder outside any repository is a project of its own when it is
+//! a leaf; folders that hold repositories, home, and temp folders are not.
 
 use std::{
     cell::RefCell,
@@ -20,11 +21,56 @@ use crate::fast::FxHashMap;
 pub(crate) struct Project {
     pub(crate) path: String,
     pub(crate) name: String,
+    pub(crate) kind: ProjectKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectKind {
+    Repository,
+    /// A working folder outside any repository.
+    Folder,
 }
 
 pub(crate) struct ProjectResolver {
     repositories: RepositoryCache,
+    folders: FolderRoots,
     roots: FxHashMap<String, Root>,
+}
+
+/// Temp folders, whose sessions are throwaway work rather than projects.
+const SCRATCH_ROOTS: &[&str] = &[
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+];
+const CLAUDE_SCRATCH_WORKSPACES: &str = "Application Support/Claude/scratch-workspaces";
+/// Standard home folders: never projects themselves, and they stop the climb.
+const HOME_FOLDERS: &[&str] = &[
+    "Applications",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Library",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+];
+/// Home subtrees that hold app data or per-task folders, never projects.
+const HOME_SCRATCH_ROOTS: &[&str] = &["Library", "Documents/Codex"];
+/// Caps the `.git` probes per container check, so folders with many
+/// subfolders stay cheap. Dependency and build output folders are skipped.
+const MAX_CONTAINER_PROBES: usize = 512;
+const SKIPPED_SUBFOLDERS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "Pods"];
+
+/// Finds the folder project of a working folder outside any repository: its
+/// highest ancestor below a container (a folder with a repository among its
+/// children or grandchildren), home, or a temp folder.
+struct FolderRoots {
+    home: Option<PathBuf>,
+    scratch_roots: Vec<PathBuf>,
+    containers: FxHashMap<PathBuf, bool>,
 }
 
 /// Memoized repository root per directory, so repeated lookups in the same
@@ -110,15 +156,23 @@ impl TurnRepositories {
 struct Root {
     path: PathBuf,
     from_git: bool,
-    is_project: bool,
+    kind: Option<ProjectKind>,
 }
 
 impl ProjectResolver {
     pub(crate) fn new(home: Option<PathBuf>) -> Self {
+        let scratch_roots = SCRATCH_ROOTS.iter().map(PathBuf::from).collect();
         Self {
+            folders: FolderRoots::new(home.clone(), scratch_roots),
             repositories: RepositoryCache::new(home),
             roots: FxHashMap::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_scratch_roots(mut self, scratch_roots: Vec<PathBuf>) -> Self {
+        self.folders.scratch_roots = scratch_roots;
+        self
     }
 
     pub(crate) fn add(&mut self, cwd: &str) {
@@ -130,20 +184,20 @@ impl ProjectResolver {
             Some(path) => Root {
                 path: PathBuf::from(path.as_ref()),
                 from_git: true,
-                is_project: true,
+                kind: Some(ProjectKind::Repository),
             },
             None => Root {
                 path,
                 from_git: false,
-                is_project: false,
+                kind: None,
             },
         };
         self.roots.insert(cwd.to_owned(), root);
     }
 
     /// Maps every added cwd to its project, merging Codex worktrees that no
-    /// longer exist into the repository they were created from. Cwds outside
-    /// any repository map to `None`.
+    /// longer exist into the repository they were created from. Cwds that are
+    /// in no project map to `None`.
     pub(crate) fn finish(mut self) -> FxHashMap<String, Option<Project>> {
         let mut git_roots_by_name = BTreeMap::<&OsStr, BTreeSet<&Path>>::new();
         for root in self.roots.values().filter(|root| root.from_git) {
@@ -184,27 +238,113 @@ impl ProjectResolver {
         for (cwd, path) in merges {
             if let Some(root) = self.roots.get_mut(&cwd) {
                 root.path = path;
-                root.is_project = true;
+                root.kind = Some(ProjectKind::Repository);
+            }
+        }
+        for root in self.roots.values_mut().filter(|root| root.kind.is_none()) {
+            if let Some(folder) = self.folders.root(&root.path) {
+                root.path = folder;
+                root.kind = Some(ProjectKind::Folder);
             }
         }
 
         let names = display_names(
             self.roots
                 .values()
-                .filter(|root| root.is_project)
+                .filter(|root| root.kind.is_some())
                 .map(|root| root.path.as_path()),
         );
         self.roots
             .iter()
             .map(|(cwd, root)| {
-                let project = root.is_project.then(|| Project {
+                let project = root.kind.map(|kind| Project {
                     path: root.path.to_string_lossy().into_owned(),
                     name: names[root.path.as_path()].clone(),
+                    kind,
                 });
                 (cwd.clone(), project)
             })
             .collect()
     }
+}
+
+impl FolderRoots {
+    fn new(home: Option<PathBuf>, scratch_roots: Vec<PathBuf>) -> Self {
+        Self {
+            home,
+            scratch_roots,
+            containers: FxHashMap::default(),
+        }
+    }
+
+    fn root(&mut self, dir: &Path) -> Option<PathBuf> {
+        if self.is_excluded(dir) || self.is_container(dir) {
+            return None;
+        }
+        let mut root = dir;
+        while let Some(parent) = root.parent() {
+            if self.is_excluded(parent) || self.is_container(parent) {
+                break;
+            }
+            root = parent;
+        }
+        Some(root.to_path_buf())
+    }
+
+    fn is_excluded(&self, dir: &Path) -> bool {
+        if dir.parent().is_none()
+            || self.scratch_roots.iter().any(|root| dir.starts_with(root))
+            || dir.to_string_lossy().contains(CLAUDE_SCRATCH_WORKSPACES)
+        {
+            return true;
+        }
+        let Some(in_home) = self
+            .home
+            .as_deref()
+            .and_then(|home| dir.strip_prefix(home).ok())
+        else {
+            return false;
+        };
+        in_home.as_os_str().is_empty()
+            || HOME_FOLDERS
+                .iter()
+                .any(|folder| in_home == Path::new(folder))
+            || HOME_SCRATCH_ROOTS
+                .iter()
+                .any(|root| in_home.starts_with(root))
+    }
+
+    fn is_container(&mut self, dir: &Path) -> bool {
+        if let Some(&cached) = self.containers.get(dir) {
+            return cached;
+        }
+        let mut probes = 0;
+        let mut has_repository = |dir: &Path| {
+            probes += 1;
+            probes <= MAX_CONTAINER_PROBES && dir.join(".git").exists()
+        };
+        let container = subdirectories(dir).any(|child| {
+            has_repository(&child)
+                || subdirectories(&child).any(|grandchild| has_repository(&grandchild))
+        });
+        self.containers.insert(dir.to_path_buf(), container);
+        container
+    }
+}
+
+fn subdirectories(dir: &Path) -> impl Iterator<Item = PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .take(MAX_CONTAINER_PROBES)
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            !name.starts_with('.') && !SKIPPED_SUBFOLDERS.contains(&name.as_ref())
+        })
+        .map(|entry| entry.path())
 }
 
 impl RepositoryCache {
@@ -329,7 +469,10 @@ mod tests {
     use super::*;
 
     fn resolve(home: &Path, cwds: &[&Path]) -> Vec<Option<Project>> {
-        let mut resolver = ProjectResolver::new(Some(home.to_path_buf()));
+        // Fixtures live under the system temp folder, which is excluded by
+        // default, so tests only exclude a dedicated `tmp` next to `home`.
+        let mut resolver = ProjectResolver::new(Some(home.to_path_buf()))
+            .with_scratch_roots(vec![home.with_file_name("tmp")]);
         for cwd in cwds {
             resolver.add(&cwd.to_string_lossy());
         }
@@ -343,6 +486,14 @@ mod tests {
         Some(Project {
             path: path.to_string_lossy().into_owned(),
             name: name.to_string(),
+            kind: ProjectKind::Repository,
+        })
+    }
+
+    fn folder(path: &Path, name: &str) -> Option<Project> {
+        Some(Project {
+            kind: ProjectKind::Folder,
+            ..project(path, name).unwrap()
         })
     }
 
@@ -426,24 +577,124 @@ mod tests {
     }
 
     #[test]
-    fn folders_outside_any_repository_are_not_projects() {
+    fn leaf_folder_without_git_is_a_folder_project() {
         let fixture = Fixture::new();
-        let _ = fixture.create_dir_all("home/notes/today");
+        let _ = fixture.create_dir_all("home/dev/app/.git");
+        let _ = fixture.create_dir_all("home/dev/tool/src");
+        let tool = fixture.path("home/dev/tool");
 
-        let projects = resolve(&fixture.path("home"), &[&fixture.path("home/notes/today")]);
+        let projects = resolve(&fixture.path("home"), &[&tool, &tool.join("src/deleted")]);
 
-        assert_eq!(projects, vec![None]);
+        assert_eq!(projects, vec![folder(&tool, "tool"); 2]);
     }
 
     #[test]
-    fn folders_containing_repositories_are_not_projects() {
+    fn leaf_folder_climbs_to_its_highest_non_container_parent() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("home/dev/app/.git");
+        let _ = fixture.create_dir_all("home/dev/workspaces/skool/landing");
+        let workspaces = fixture.path("home/dev/workspaces");
+
+        let projects = resolve(
+            &fixture.path("home"),
+            &[&fixture.path("home/dev/workspaces/skool/landing")],
+        );
+
+        assert_eq!(projects, vec![folder(&workspaces, "workspaces")]);
+    }
+
+    #[test]
+    fn folders_with_repositories_two_levels_down_are_containers() {
         let fixture = Fixture::new();
         let _ = fixture.create_dir_all("home/dev/perso/app/.git");
-        let _ = fixture.create_dir_all("home/dev/perso/web/.git");
+        let _ = fixture.create_dir_all("home/dev/perso/workspaces/web/.git");
 
-        let projects = resolve(&fixture.path("home"), &[&fixture.path("home/dev/perso")]);
+        let projects = resolve(
+            &fixture.path("home"),
+            &[
+                &fixture.path("home/dev/perso"),
+                &fixture.path("home/dev/perso/workspaces"),
+                &fixture.path("home/dev"),
+            ],
+        );
 
-        assert_eq!(projects, vec![None]);
+        assert_eq!(projects, vec![None, None, None]);
+    }
+
+    #[test]
+    fn excluded_locations_are_never_folder_projects() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("home/notes");
+        let _ = fixture.create_dir_all("tmp/scratch");
+        let claude_scratch = "home/Library/Application Support/Claude/scratch-workspaces/a/b";
+        let _ = fixture.create_dir_all(claude_scratch);
+
+        let projects = resolve(
+            &fixture.path("home"),
+            &[
+                &fixture.path("home"),
+                &fixture.path("tmp/scratch"),
+                &fixture.path(claude_scratch),
+            ],
+        );
+
+        assert_eq!(projects, vec![None, None, None]);
+    }
+
+    #[test]
+    fn folder_directly_under_home_is_a_folder_project() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("home/notes/today");
+        let notes = fixture.path("home/notes");
+
+        let projects = resolve(&fixture.path("home"), &[&notes.join("today")]);
+
+        assert_eq!(projects, vec![folder(&notes, "notes")]);
+    }
+
+    #[test]
+    fn folders_inside_standard_home_folders_are_projects() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("home/Documents/x/notes");
+        let x = fixture.path("home/Documents/x");
+
+        let projects = resolve(&fixture.path("home"), &[&x.join("notes")]);
+
+        assert_eq!(projects, vec![folder(&x, "x")]);
+    }
+
+    #[test]
+    fn standard_home_folders_and_app_data_are_scratch() {
+        let fixture = Fixture::new();
+        let codex_task = "home/Documents/Codex/2026-10-01/task";
+        let icloud = "home/Library/Mobile Documents/iCloud~md~obsidian/Documents/vault";
+        let _ = fixture.create_dir_all(codex_task);
+        let _ = fixture.create_dir_all(icloud);
+        let _ = fixture.create_dir_all("home/Desktop");
+
+        let projects = resolve(
+            &fixture.path("home"),
+            &[
+                &fixture.path(codex_task),
+                &fixture.path(icloud),
+                &fixture.path("home/Desktop"),
+            ],
+        );
+
+        assert_eq!(projects, vec![None, None, None]);
+    }
+
+    #[test]
+    fn memoizes_container_checks() {
+        let fixture = Fixture::new();
+        let _ = fixture.create_dir_all("dev/app/.git");
+        let mut folders = FolderRoots::new(None, Vec::new());
+        let dev = fixture.path("dev");
+
+        assert!(folders.is_container(&dev));
+        fs::remove_dir_all(fixture.path("dev/app")).unwrap();
+
+        assert!(folders.is_container(&dev));
     }
 
     #[test]
@@ -453,9 +704,9 @@ mod tests {
         let _ = fixture.create_dir_all("home/notes");
         let home = fixture.path("home");
 
-        let projects = resolve(&home, &[&home.join("notes"), &home]);
+        let projects = resolve(&home, &[&home]);
 
-        assert_eq!(projects, vec![None, None]);
+        assert_eq!(projects, vec![None]);
     }
 
     #[test]

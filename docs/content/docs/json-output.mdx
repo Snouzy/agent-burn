@@ -41,8 +41,9 @@ harness tabs. Add `--value` to include subscription plan information.
 
 ### Projects
 
-Summary JSON includes `projects`, the cost of each git repository in the
-selected date range:
+Summary JSON includes `projects`, the cost of each project in the selected date
+range. A project is a git repository, or a working folder outside any
+repository:
 
 ```json
 {
@@ -61,14 +62,21 @@ selected date range:
 
 `kind` is one of:
 
-- `repository`: a git repository. Repositories come first, sorted by cost.
-- `scratch`: one `Scratch` entry with a `null` path for work outside any
-  repository, such as the home directory, `/tmp`, or a folder that only
-  contains repositories.
+- `repository`: a git repository.
+- `folder`: a working folder that is not in a git repository and holds no
+  repositories itself. Its path is the highest such folder, so a session in
+  `~/dev/notes/drafts` counts toward `~/dev/notes`.
+- `scratch`: one `Scratch` entry with a `null` path for work that belongs to
+  no project: the home directory, standard home folders such as `~/Documents`
+  or `~/Desktop` (folders inside them can still be projects), anything in
+  `~/Library` or `~/Documents/Codex`, temp folders such as `/tmp`, Claude
+  desktop scratch workspaces, and folders with a git repository among their
+  children or grandchildren, such as `~/dev`.
 - `other`: one final `Other` entry with a `null` path for usage with no known
   location, including agents that do not record one.
 
-`Scratch` and `Other` are omitted when empty. `percentage` is the share of total
+Repositories and folders come first, sorted by cost. `Scratch` and `Other`
+are omitted when empty. `percentage` is the share of total
 cost, or of total tokens when nothing has a cost. Project costs add up to
 `totals.totalCost`. The terminal summary does not show projects.
 
@@ -84,12 +92,12 @@ When a turn touches several repositories, the most referenced one wins. A turn
 that touches nothing counts toward the repository the session touched last, and
 turns before the first touch count toward the first repository the session
 touches. A Claude Code or Codex session that never touches a repository counts
-toward the repository of its working directory, or `Scratch` when that folder is
-not in one. Paths outside repositories, such as `~/.claude` or `/tmp`, are
+toward the project of its working directory: its repository, else its folder
+project, else `Scratch`. Paths outside repositories, such as `~/.claude` or `/tmp`, are
 ignored.
 
 Subfolders, git worktrees, and deleted Codex worktrees count toward the
-repository they belong to, even after the folder is gone. When two repositories
+repository they belong to, even after the folder is gone. When two projects
 share a folder name, `name` includes the parent folder (`work/api`,
 `perso/api`).
 

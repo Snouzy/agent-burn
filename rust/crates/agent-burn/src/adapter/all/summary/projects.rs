@@ -4,14 +4,13 @@ use super::{AllRow, percentage};
 use crate::{
     fast::FxHashMap,
     json_float,
-    project_root::{Project, ProjectResolver},
+    project_root::{Project, ProjectKind, ProjectResolver},
 };
 
-/// Buckets in output order: repositories, then usage from locations outside
-/// any repository, then usage with no location at all.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Kind {
     Repository,
+    Folder,
     Scratch,
     Other,
 }
@@ -20,8 +19,19 @@ impl Kind {
     fn as_str(self) -> &'static str {
         match self {
             Kind::Repository => "repository",
+            Kind::Folder => "folder",
             Kind::Scratch => "scratch",
             Kind::Other => "other",
+        }
+    }
+
+    /// Output order: projects by cost, then work outside any project, then
+    /// usage with no location at all.
+    fn rank(self) -> u8 {
+        match self {
+            Kind::Repository | Kind::Folder => 0,
+            Kind::Scratch => 1,
+            Kind::Other => 2,
         }
     }
 }
@@ -41,8 +51,8 @@ struct AgentShare {
     tokens: u64,
 }
 
-/// Cost per git repository. Usage from locations outside any repository is
-/// grouped as "Scratch", and usage without a location as a trailing "Other".
+/// Cost per project (git repository or leaf working folder). Usage from other
+/// locations is grouped as "Scratch", and usage without one as "Other".
 pub(super) fn projects_json(rows: &[AllRow]) -> Value {
     projects_json_with(rows, ProjectResolver::new(crate::home::home_dir()))
 }
@@ -74,7 +84,13 @@ fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
         }
         for project in &row.project_breakdowns {
             let bucket = match resolved.get(project.cwd.as_ref()) {
-                Some(Some(project)) => (Kind::Repository, Some(project)),
+                Some(Some(project)) => {
+                    let kind = match project.kind {
+                        ProjectKind::Repository => Kind::Repository,
+                        ProjectKind::Folder => Kind::Folder,
+                    };
+                    (kind, Some(project))
+                }
                 Some(None) => (Kind::Scratch, None),
                 None => (Kind::Other, None),
             };
@@ -93,7 +109,8 @@ fn projects_json_with(rows: &[AllRow], mut resolver: ProjectResolver) -> Value {
     }
     projects.sort_by(|a, b| {
         a.kind
-            .cmp(&b.kind)
+            .rank()
+            .cmp(&b.kind.rank())
             .then_with(|| b.cost.total_cmp(&a.cost))
             .then_with(|| b.tokens.cmp(&a.tokens))
     });
@@ -212,7 +229,9 @@ mod tests {
     }
 
     fn projects_json_for(fixture: &Fixture, rows: &[AllRow]) -> Value {
-        projects_json_with(rows, ProjectResolver::new(Some(fixture.path("home"))))
+        let resolver = ProjectResolver::new(Some(fixture.path("home")))
+            .with_scratch_roots(vec![fixture.path("tmp")]);
+        projects_json_with(rows, resolver)
     }
 
     fn repo(fixture: &Fixture, path: &str) -> String {
@@ -276,21 +295,48 @@ mod tests {
     }
 
     #[test]
-    fn counts_home_and_folders_outside_repositories_as_scratch() {
+    fn counts_home_and_temp_folders_as_scratch() {
         let fixture = Fixture::new();
         let home = fixture.path("home").to_string_lossy().into_owned();
-        let notes = fixture.path("home/notes").to_string_lossy().into_owned();
+        let tmp = fixture.path("tmp/x").to_string_lossy().into_owned();
         let rows = vec![day(vec![agent_row(
             "codex",
             30,
             3.0,
-            vec![project(&home, 10, 1.0), project(&notes, 20, 2.0)],
+            vec![project(&home, 10, 1.0), project(&tmp, 20, 2.0)],
         )])];
 
         let projects = projects_json_for(&fixture, &rows);
 
         assert_eq!(summary(&projects), vec![("Scratch", "scratch", 3.0)]);
         assert_eq!(projects[0]["agents"][0]["totalTokens"], 30);
+    }
+
+    #[test]
+    fn sorts_leaf_folders_with_repositories_by_cost() {
+        let fixture = Fixture::new();
+        let app = repo(&fixture, "home/dev/app");
+        let tool = fixture
+            .path("home/dev/tool/src")
+            .to_string_lossy()
+            .into_owned();
+        let rows = vec![day(vec![agent_row(
+            "codex",
+            30,
+            3.0,
+            vec![project(&app, 10, 1.0), project(&tool, 20, 2.0)],
+        )])];
+
+        let projects = projects_json_for(&fixture, &rows);
+
+        assert_eq!(
+            summary(&projects),
+            vec![("tool", "folder", 2.0), ("app", "repository", 1.0)]
+        );
+        assert_eq!(
+            projects[0]["path"],
+            json!(fixture.path("home/dev/tool").to_string_lossy())
+        );
     }
 
     #[test]
