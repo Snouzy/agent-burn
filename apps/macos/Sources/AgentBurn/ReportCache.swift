@@ -5,6 +5,15 @@ struct SummaryQuery: Equatable {
   let agent: String?
   var cacheKey: String { period.rawValue + (agent.map { ":" + $0 } ?? "") }
   var arguments: [String] { period.arguments + (agent.map { ["--agents", $0] } ?? []) }
+
+  /// Overview and Projects pages both read the all-harness summary.
+  static func harness(for selection: String) -> String? {
+    ["summary", "projects"].contains(selection) ? nil : selection
+  }
+
+  static func `for`(period: UsagePeriod, selection: String) -> SummaryQuery {
+    SummaryQuery(period: period == .rtd ? .all : period, agent: harness(for: selection))
+  }
 }
 
 enum SourcePaths {

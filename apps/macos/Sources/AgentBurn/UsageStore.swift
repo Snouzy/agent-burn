@@ -34,11 +34,8 @@ final class UsageStore {
   private var pendingSummary: (query: SummaryQuery, force: Bool)?
   private var pendingHistory: SummaryQuery?
   private var summaryErrors: [String: String] = [:]
-  private var currentQuery: SummaryQuery {
-    SummaryQuery(
-      period: period == .rtd ? .all : period,
-      agent: selection == "summary" ? nil : selection)
-  }
+  private var currentQuery: SummaryQuery { .for(period: period, selection: selection) }
+  var selectedHarness: String? { SummaryQuery.harness(for: selection) }
   var hasPeriodDetails: Bool { savedSummary(for: currentQuery) != nil }
   var period = UsagePeriod.mtd {
     didSet {
@@ -511,7 +508,7 @@ final class UsageStore {
   }
 
   var resetStartDate: Date? {
-    let agent = selection == "summary" ? quotaSource.rawValue : selection
+    let agent = selectedHarness ?? quotaSource.rawValue
     return resets(for: agent).last?.date ?? forecast(for: agent)?.start
   }
 
